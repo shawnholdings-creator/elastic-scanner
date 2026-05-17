@@ -1,17 +1,24 @@
 """
-Scoring Engine — Entry Quality Score (Additive)
+Scoring Engine — Entry Quality Score (Additive, v2.5 Parity)
 
-Additive scoring system (0-100) that rewards actionable setups
-and penalizes overextension. Each condition adds or subtracts points.
+Additive scoring system (0-100) with bonus points for v2.5 precision:
 
-+25  MTF aligned (all 3 TFs agree)
-+20  Recent compression present
-+20  Fresh 4H flip / trigger
-+15  ALMA momentum confirms direction
-+10  Volume surge confirms
-+10  Good extension (< 1.5 ATR from trail)
--25  Extension > 2.5 ATR
--40  Extension > 3.5 ATR (replaces -25)
+Base factors:
+  +25  MTF aligned (all 3+ TFs agree)
+  +20  Recent compression present
+  +20  Fresh 4H flip / trigger
+  +15  ALMA momentum confirms direction
+  +10  Volume surge confirms
+  +10  Good extension (< 1.5 ATR from trail)
+
+v2.5 precision bonuses:
+  +10  Compression→Expansion transition (expansionFire)
+  +5   Strong directional candle
+  +5   ALMA acceleration confirms
+
+Penalties:
+  -25  Extension > 2.5 ATR
+  -40  Extension > 3.5 ATR (replaces -25)
 """
 
 import sys, os
@@ -20,6 +27,7 @@ from config.settings import (
     EQS_MTF_ALIGNED, EQS_COMPRESSION, EQS_FRESH_FLIP,
     EQS_MOMENTUM, EQS_VOLUME, EQS_GOOD_EXT,
     EQS_PENALTY_MID_EXT, EQS_PENALTY_HIGH_EXT,
+    EQS_EXPANSION_FIRE, EQS_CANDLE_QUALITY, EQS_ALMA_ACCEL,
     FRESH_FLIP_BARS, COMP_FIRE_MIN, VOL_SURGE_MULT,
 )
 
@@ -27,11 +35,9 @@ from config.settings import (
 def score_signal(signal: dict) -> dict:
     """
     Score a signal using the additive Entry Quality Score system.
+    Now includes v2.5 precision bonuses for expansion, candle, and ALMA accel.
 
-    Adds 'score' (0-100 clamped) and 'factors' (breakdown dict)
-    to the signal dict.
-
-    Returns the mutated signal dict.
+    Returns the mutated signal dict with 'score' and 'factors'.
     """
     eqs = 0
     factors = {}
@@ -101,6 +107,27 @@ def score_signal(signal: dict) -> dict:
         factors["extension"] = EQS_GOOD_EXT
     else:
         factors["extension"] = 0
+
+    # ─── +10 Expansion Fire (v2.5) ───────────────────────────────
+    if signal.get("expansion_fire", False):
+        eqs += EQS_EXPANSION_FIRE
+        factors["expansion_fire"] = EQS_EXPANSION_FIRE
+    else:
+        factors["expansion_fire"] = 0
+
+    # ─── +5 Strong Candle (v2.5) ─────────────────────────────────
+    if signal.get("strong_candle", False):
+        eqs += EQS_CANDLE_QUALITY
+        factors["candle_quality"] = EQS_CANDLE_QUALITY
+    else:
+        factors["candle_quality"] = 0
+
+    # ─── +5 ALMA Acceleration (v2.5) ─────────────────────────────
+    if signal.get("alma_accel", False):
+        eqs += EQS_ALMA_ACCEL
+        factors["alma_accel"] = EQS_ALMA_ACCEL
+    else:
+        factors["alma_accel"] = 0
 
     # ─── Penalties ───────────────────────────────────────────────
     if ext > 3.5:

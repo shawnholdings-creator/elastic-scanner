@@ -134,11 +134,13 @@ def send_ntfy(bulls: list[dict], bears: list[dict]) -> bool:
 def _filter_actionable(signals: list[dict]) -> list[dict]:
     """
     Filter signals to only actionable ones:
-    - FIRE or PREP only (no EXTENDED)
+    - ELITE, IDEAL, SLINGSHOT, PRIME, FIRE, PREP (no EXTENDED)
     - Score >= MIN_NTFY_SCORE
     - Deduplicated by ticker (keep highest score)
     - Sorted by score descending
     """
+    ACTIONABLE_SIGNALS = {"ELITE", "IDEAL", "SLINGSHOT", "PRIME", "FIRE", "PREP"}
+
     seen_tickers = set()
     result = []
 
@@ -147,7 +149,7 @@ def _filter_actionable(signals: list[dict]) -> list[dict]:
 
     for s in sorted_signals:
         # Skip non-actionable signal types
-        if s.get("signal") not in ("FIRE", "PREP"):
+        if s.get("signal") not in ACTIONABLE_SIGNALS:
             continue
 
         # Skip below threshold

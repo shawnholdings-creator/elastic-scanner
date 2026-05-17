@@ -21,6 +21,7 @@ ALMA_SIGMA = 6
 EXT_LOW = 1.5       # PREP ceiling — "ideal zone"
 EXT_FIRE_MAX = 2.0  # FIRE ceiling
 EXT_HIGH = 3.0      # EXTENDED floor — overextended
+EXT_ELITE = 1.2     # Elite entry ceiling
 
 # ─── Compression Score Thresholds ──────────────────────────────────
 COMP_PREP_MIN = 3       # PREP requires >= 3 of 5 signals
@@ -32,10 +33,20 @@ FRESH_FLIP_BARS = 2     # must have flipped within last N bars (4H = 8 hours)
 
 # ─── Volume ────────────────────────────────────────────────────────
 VOL_SURGE_MULT = 1.2    # volume >= 1.2x 20-bar avg
+VOL_RV_MULT = 1.25      # relative volume for elite entry (Dashboard v2.5)
 VOL_AVG_PERIOD = 20
 
+# ─── Tension (BB Width Ratio) ─────────────────────────────────────
+TENSION_COMPRESSED = 0.60   # tensionVal <= this = COIL
+TENSION_BUILDING = 1.00     # tensionVal <= this = BUILDING
+TENSION_STRETCHED = 1.40    # tensionVal > this = HOT
+
+# ─── Candle Quality ───────────────────────────────────────────────
+CANDLE_BODY_MIN = 0.60      # minimum body % of range
+CANDLE_CLOSE_ZONE = 0.25    # close must be in top/bottom 25% of range
+
 # ─── Entry Quality Score (additive, 0-100 scale) ──────────────────
-EQS_MTF_ALIGNED = 25       # all 3 TFs agree
+EQS_MTF_ALIGNED = 25       # all 3+ TFs agree
 EQS_COMPRESSION = 20       # recent compression present
 EQS_FRESH_FLIP = 20        # fresh 4H flip / trigger
 EQS_MOMENTUM = 15          # ALMA momentum confirms direction
@@ -43,6 +54,11 @@ EQS_VOLUME = 10            # volume surge confirms
 EQS_GOOD_EXT = 10          # extension in ideal zone (< 1.5 ATR)
 EQS_PENALTY_MID_EXT = -25  # ext > 2.5 ATR penalty
 EQS_PENALTY_HIGH_EXT = -40 # ext > 3.5 ATR penalty (replaces mid)
+
+# Bonus points for v2.5 precision filters
+EQS_EXPANSION_FIRE = 10    # compression→expansion transition
+EQS_CANDLE_QUALITY = 5     # strong directional candle
+EQS_ALMA_ACCEL = 5         # ALMA acceleration confirms
 
 # ─── ntfy Alert Thresholds ─────────────────────────────────────────
 MIN_NTFY_SCORE = 75     # minimum score to include in ntfy alert
@@ -67,7 +83,6 @@ FALLBACK_TICKERS = [
 ]
 
 # Major indices — always included in every scan
-# ETF proxies used because they have volume data for scoring
 INDEX_TICKERS = [
     "SPY",    # S&P 500
     "DIA",    # DJIA
@@ -85,6 +100,7 @@ TIMEFRAMES = {
     "4H": {"interval": "1h", "period": "60d", "resample": "4h"},
     "1D": {"interval": "1d", "period": "1y",  "resample": None},
     "1W": {"interval": "1wk", "period": "2y", "resample": None},
+    "1M": {"interval": "1mo", "period": "5y", "resample": None},
 }
 
 # ─── Alerts ────────────────────────────────────────────────────────

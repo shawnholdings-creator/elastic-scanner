@@ -202,7 +202,7 @@ def run():
     for ticker in tickers:
         ticker_data = all_data.get(ticker, {})
 
-        # Skip if missing any TF
+        # Skip if missing required TFs (monthly is optional)
         if not all(tf in ticker_data for tf in ["4H", "1D", "1W"]):
             skipped += 1
             continue
@@ -214,23 +214,28 @@ def run():
 
         # Run elastic engine on each TF
         results = {}
-        for tf in ["4H", "1D", "1W"]:
+        for tf in ["4H", "1D", "1W", "1M"]:
+            if tf not in ticker_data:
+                results[tf] = None
+                continue
             try:
                 enriched = process_ticker_tf(ticker_data[tf])
                 results[tf] = extract_last_bar(enriched)
             except Exception:
                 results[tf] = None
 
-        if not all(results.values()):
+        # Must have at least 4H, 1D, 1W
+        if not all(results[tf] for tf in ["4H", "1D", "1W"]):
             skipped += 1
             continue
 
-        # Classify signal
+        # Classify signal (monthly is optional)
         signal = classify_signal(
             ticker,
             results["4H"],
             results["1D"],
             results["1W"],
+            results.get("1M"),
         )
 
         if signal:
@@ -254,7 +259,7 @@ def run():
         reverse=True,
     )
 
-    actionable = [s for s in signals if s.get("signal") in ("FIRE", "PREP")]
+    actionable = [s for s in signals if s.get("signal") in ("ELITE", "IDEAL", "SLINGSHOT", "PRIME", "FIRE", "PREP")]
     logger.info(f"Actionable (FIRE+PREP): {len(actionable)} | EXTENDED (suppressed): {len(signals) - len(actionable)}")
 
     # 5. Output
