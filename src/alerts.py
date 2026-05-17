@@ -222,6 +222,35 @@ def _score_to_grade(score: int) -> str:
     return "D"
 
 
+def _build_verdict(signal: dict) -> str:
+    """
+    Build a descriptive verdict label for the dashboard.
+    Combines direction + compression state + tier for human-readable labels.
+    Examples: "BULLISH SLINGSHOT", "BEARISH FIRE", "COIL", "READY"
+    """
+    direction = signal.get("direction", "BULL")
+    tier = signal.get("tier", "PREP")
+    is_compressed = signal.get("is_compressed", False)
+    flip_age = signal.get("flip_age", 999)
+    expansion_fire = signal.get("expansion_fire", False)
+
+    prefix = "BULLISH" if direction == "BULL" else "BEARISH"
+
+    # Compression-based verdicts
+    if is_compressed and flip_age <= 2 and expansion_fire:
+        return f"{prefix} SLINGSHOT"
+    elif is_compressed:
+        return "COIL"
+    elif flip_age <= 2:
+        return f"{prefix} TRIGGER"
+    elif tier == "ELITE":
+        return f"{prefix} ELITE"
+    elif tier == "FIRE":
+        return f"{prefix} FIRE"
+    else:
+        return "READY"
+
+
 def export_dashboard_json(signals: list[dict], tickers_scanned: int) -> bool:
     """
     Push actionable signals to a GitHub Gist for the AI Dashboard.
@@ -248,10 +277,12 @@ def export_dashboard_json(signals: list[dict], tickers_scanned: int) -> bool:
             {
                 "ticker": s["ticker"],
                 "signal": s.get("tier", "PREP"),
+                "verdict": _build_verdict(s),
                 "direction": s["direction"],
                 "score": s["score"],
                 "ext": round(s.get("ext", 0), 1),
                 "grade": _score_to_grade(s["score"]),
+                "price": round(s.get("close", 0), 2),
             }
             for s in actionable[:20]  # cap at 20 for payload size
         ],
