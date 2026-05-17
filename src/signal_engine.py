@@ -3,6 +3,9 @@ Signal Engine — PREP / FIRE / EXTENDED Classification
 
 Takes elastic_engine output from all 3 timeframes and classifies
 each ticker into one of three signal types (or None).
+
+FIRE and PREP are actionable. EXTENDED is informational only
+and suppressed from ntfy alerts.
 """
 
 import sys, os
@@ -16,12 +19,12 @@ from config.settings import (
 
 def classify_signal(ticker: str, data_4h: dict, data_1d: dict, data_1w: dict) -> dict | None:
     """
-    Classify a ticker into PREP, FIRE, EXTENDED, or None.
-    
-    Each data_* dict contains the LAST bar's computed values:
-        is_bull, ext, comp_score, flip_bar_age, alma_rising, vol_ratio,
-        recent_comp_max (max comp_score in last N bars)
-    
+    Classify a ticker into FIRE, PREP, EXTENDED, or None.
+
+    FIRE:     Fresh 4H flip + compression + momentum + volume + not extended
+    PREP:     MTF aligned + compressed + ideal zone (about to fire)
+    EXTENDED: MTF aligned but overextended (informational, suppressed from ntfy)
+
     Returns dict with signal info or None if no signal.
     """
     if not all([data_4h, data_1d, data_1w]):
@@ -37,18 +40,9 @@ def classify_signal(ticker: str, data_4h: dict, data_1d: dict, data_1w: dict) ->
     mtf_aligned = triple_bull or triple_bear
 
     direction = "BULL" if triple_bull else "BEAR" if triple_bear else "MIXED"
-    mtf_count = sum([
-        1 if bull_4h else 0,
-        1 if bull_1d else 0,
-        1 if bull_1w else 0,
-    ])
-    # For bears, count bearish TFs
-    if triple_bear:
-        mtf_count = 3
-
     mtf_label = _mtf_label(bull_4h, bull_1d, bull_1w)
 
-    # Extension (use 4H as primary)
+    # Extract 4H values (primary timeframe for signals)
     ext = data_4h["ext"]
     flip_age = data_4h["flip_bar_age"]
     comp_now = data_4h["comp_score"]
@@ -64,6 +58,19 @@ def classify_signal(ticker: str, data_4h: dict, data_1d: dict, data_1w: dict) ->
     else:
         momentum_ok = False
 
+    # Build base result dict (shared by all signal types)
+    base = {
+        "ticker": ticker,
+        "direction": direction,
+        "ext": round(ext, 2),
+        "mtf": mtf_label,
+        "comp_score": comp_now,
+        "recent_comp_max": recent_comp,
+        "flip_age": flip_age,
+        "alma_rising": alma_rising,
+        "vol_ratio": round(vol_ratio, 2),
+    }
+
     # ─── FIRE: Fresh 4H flip + compression + momentum + vol ───────
     if (mtf_aligned
         and flip_age <= FRESH_FLIP_BARS
@@ -71,47 +78,17 @@ def classify_signal(ticker: str, data_4h: dict, data_1d: dict, data_1w: dict) ->
         and momentum_ok
         and vol_ratio >= VOL_SURGE_MULT
         and ext <= EXT_FIRE_MAX):
-        return {
-            "ticker": ticker,
-            "signal": "FIRE",
-            "direction": direction,
-            "ext": round(ext, 2),
-            "mtf": mtf_label,
-            "comp_score": comp_now,
-            "flip_age": flip_age,
-            "alma_rising": alma_rising,
-            "vol_ratio": round(vol_ratio, 2),
-        }
+        return {**base, "signal": "FIRE"}
 
     # ─── PREP: Aligned + compressed + ideal zone ─────────────────
     if (mtf_aligned
         and comp_now >= COMP_PREP_MIN
         and ext <= EXT_LOW):
-        return {
-            "ticker": ticker,
-            "signal": "PREP",
-            "direction": direction,
-            "ext": round(ext, 2),
-            "mtf": mtf_label,
-            "comp_score": comp_now,
-            "flip_age": flip_age,
-            "alma_rising": alma_rising,
-            "vol_ratio": round(vol_ratio, 2),
-        }
+        return {**base, "signal": "PREP"}
 
-    # ─── EXTENDED: Aligned but overextended ──────────────────────
+    # ─── EXTENDED: Aligned but overextended (informational only) ──
     if (mtf_aligned and ext > EXT_HIGH):
-        return {
-            "ticker": ticker,
-            "signal": "EXTENDED",
-            "direction": direction,
-            "ext": round(ext, 2),
-            "mtf": mtf_label,
-            "comp_score": comp_now,
-            "flip_age": flip_age,
-            "alma_rising": alma_rising,
-            "vol_ratio": round(vol_ratio, 2),
-        }
+        return {**base, "signal": "EXTENDED"}
 
     return None
 

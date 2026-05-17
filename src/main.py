@@ -232,25 +232,28 @@ def run():
 
     logger.info(f"Processed: {processed} | Skipped: {skipped} | Signals: {len(signals)}")
 
-    # 4. Rank and split
+    # 4. Rank and split (pass all to alerts — filter happens there)
     bulls = sorted(
         [s for s in signals if s["direction"] == "BULL"],
         key=lambda x: x["score"],
         reverse=True,
-    )[:TOP_N]
+    )
 
     bears = sorted(
         [s for s in signals if s["direction"] == "BEAR"],
         key=lambda x: x["score"],
         reverse=True,
-    )[:TOP_N]
+    )
+
+    actionable = [s for s in signals if s.get("signal") in ("FIRE", "PREP")]
+    logger.info(f"Actionable (FIRE+PREP): {len(actionable)} | EXTENDED (suppressed): {len(signals) - len(actionable)}")
 
     # 5. Output
     all_ranked = sorted(signals, key=lambda x: x["score"], reverse=True)
     export_csv(all_ranked, OUTPUT_DIR)
     print_summary(bulls, bears)
 
-    # 6. Push alerts
+    # 6. Push alerts (only actionable signals sent to ntfy)
     send_ntfy(bulls, bears)
 
     elapsed = time.time() - t_start

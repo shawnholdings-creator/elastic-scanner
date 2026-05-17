@@ -34,12 +34,18 @@ FRESH_FLIP_BARS = 2     # must have flipped within last N bars (4H = 8 hours)
 VOL_SURGE_MULT = 1.2    # volume >= 1.2x 20-bar avg
 VOL_AVG_PERIOD = 20
 
-# ─── Scoring Weights (sum to 1.0) ─────────────────────────────────
-W_MTF = 0.30
-W_COMPRESSION = 0.25
-W_MOMENTUM = 0.20
-W_VOLUME = 0.15
-W_EXTENSION = 0.10
+# ─── Entry Quality Score (additive, 0-100 scale) ──────────────────
+EQS_MTF_ALIGNED = 25       # all 3 TFs agree
+EQS_COMPRESSION = 20       # recent compression present
+EQS_FRESH_FLIP = 20        # fresh 4H flip / trigger
+EQS_MOMENTUM = 15          # ALMA momentum confirms direction
+EQS_VOLUME = 10            # volume surge confirms
+EQS_GOOD_EXT = 10          # extension in ideal zone (< 1.5 ATR)
+EQS_PENALTY_MID_EXT = -25  # ext > 2.5 ATR penalty
+EQS_PENALTY_HIGH_EXT = -40 # ext > 3.5 ATR penalty (replaces mid)
+
+# ─── ntfy Alert Thresholds ─────────────────────────────────────────
+MIN_NTFY_SCORE = 75     # minimum score to include in ntfy alert
 
 # ─── Quality Gate ──────────────────────────────────────────────────
 MIN_PRICE = 15.0
@@ -74,3 +80,5 @@ NTFY_URL = f"https://ntfy.sh/{NTFY_TOPIC}"
 # ─── Output ────────────────────────────────────────────────────────
 TOP_N = 5
 OUTPUT_DIR = "output"
+
+DISCLAIMER = "EDUCATIONAL ANALYSIS ONLY. NOT FINANCIAL ADVICE. NOT A RECOMMENDATION TO BUY, SELL, OR HOLD."

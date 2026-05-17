@@ -2,7 +2,11 @@
 Alerts — CSV Export + ntfy Push Notifications
 
 Handles all output: writing scan results to CSV and pushing
-top signals to mobile via ntfy.sh.
+actionable signals (FIRE + PREP only) to mobile via ntfy.
+
+ntfy format:
+    ticker score (one per line, sorted highest first)
+    disclaimer at end of every message
 """
 
 import csv
@@ -15,7 +19,7 @@ import requests
 
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from config.settings import NTFY_URL, OUTPUT_DIR, TOP_N
+from config.settings import NTFY_URL, OUTPUT_DIR, TOP_N, MIN_NTFY_SCORE, DISCLAIMER
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +30,7 @@ def export_csv(signals: list[dict], output_dir: str = OUTPUT_DIR) -> str:
     Export signals to CSV files:
     1. output/elastic_scan_{timestamp}.csv — timestamped archive
     2. output/latest.csv — overwritten each run
-    
+
     Returns path to the timestamped file.
     """
     Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -55,45 +59,58 @@ def export_csv(signals: list[dict], output_dir: str = OUTPUT_DIR) -> str:
 # ─── ntfy Push ─────────────────────────────────────────────────────
 def send_ntfy(bulls: list[dict], bears: list[dict]) -> bool:
     """
-    Push top signals to ntfy.sh for mobile notifications.
-    
+    Push actionable signals to ntfy.sh.
+
+    Only sends FIRE and PREP signals with score >= MIN_NTFY_SCORE.
+    EXTENDED signals are suppressed entirely.
+    Duplicate tickers are removed.
+
     Format:
-        🟢 BULL
-        AAPL  FIRE  87  E:1.2  MTF:4H+ 1D+ 1W+
-        ...
-        🔴 BEAR
-        XOM   FIRE  82  E:1.5  MTF:4H- 1D- 1W-
-    
+        (chart emoji) ELASTIC BULLISH
+        AMZN 92
+        NVDA 88
+
+        (chart emoji) ELASTIC BEARISH
+        AAPL 86
+        CRM 81
+
+        DISCLAIMER
+
     Returns True if sent successfully.
     """
-    if not bulls and not bears:
-        logger.info("No signals to push — skipping ntfy")
+    # Filter: actionable only (FIRE + PREP), score >= threshold, deduped
+    actionable_bulls = _filter_actionable(bulls)
+    actionable_bears = _filter_actionable(bears)
+
+    if not actionable_bulls and not actionable_bears:
+        logger.info("No actionable signals above threshold -- skipping ntfy")
         return False
 
     lines = []
 
-    if bulls:
-        lines.append("🟢 BULL")
-        for s in bulls[:TOP_N]:
-            lines.append(_format_signal_line(s))
+    if actionable_bulls:
+        lines.append("\U0001F4C8 ELASTIC BULLISH")
+        for s in actionable_bulls[:TOP_N]:
+            lines.append(f"{s['ticker']} {s['score']}")
         lines.append("")
 
-    if bears:
-        lines.append("🔴 BEAR")
-        for s in bears[:TOP_N]:
-            lines.append(_format_signal_line(s))
+    if actionable_bears:
+        lines.append("\U0001F4C9 ELASTIC BEARISH")
+        for s in actionable_bears[:TOP_N]:
+            lines.append(f"{s['ticker']} {s['score']}")
+        lines.append("")
+
+    lines.append(DISCLAIMER)
 
     body = "\n".join(lines)
 
-    # Determine priority
-    has_fire = any(s.get("signal") == "FIRE" for s in bulls + bears)
+    # Priority: high if any FIRE signal present
+    has_fire = any(
+        s.get("signal") == "FIRE"
+        for s in actionable_bulls + actionable_bears
+    )
     priority = "high" if has_fire else "default"
-
-    # Title must be latin-1 safe (no emoji in headers)
-    if has_fire:
-        title = "Elastic Scanner - FIRE"
-    else:
-        title = "Elastic Scanner"
+    title = "Elastic Scanner"
 
     try:
         resp = requests.post(
@@ -107,21 +124,45 @@ def send_ntfy(bulls: list[dict], bears: list[dict]) -> bool:
             timeout=15,
         )
         resp.raise_for_status()
-        logger.info(f"ntfy sent ({priority} priority)")
+        logger.info(f"ntfy sent ({priority} priority, {len(actionable_bulls)}B/{len(actionable_bears)}S)")
         return True
     except Exception as e:
         logger.error(f"ntfy failed: {e}")
         return False
 
 
-def _format_signal_line(s: dict) -> str:
-    """Format a single signal for the ntfy body."""
-    ticker = s.get("ticker", "???").ljust(6)
-    signal = s.get("signal", "???").ljust(8)
-    score = str(int(s.get("score", 0))).rjust(3)
-    ext = f"E:{s.get('ext', 0):.1f}"
-    mtf = s.get("mtf", "???")
-    return f"  {ticker} {signal} {score}  {ext}  {mtf}"
+def _filter_actionable(signals: list[dict]) -> list[dict]:
+    """
+    Filter signals to only actionable ones:
+    - FIRE or PREP only (no EXTENDED)
+    - Score >= MIN_NTFY_SCORE
+    - Deduplicated by ticker (keep highest score)
+    - Sorted by score descending
+    """
+    seen_tickers = set()
+    result = []
+
+    # Sort by score first so dedup keeps the highest
+    sorted_signals = sorted(signals, key=lambda x: x.get("score", 0), reverse=True)
+
+    for s in sorted_signals:
+        # Skip non-actionable signal types
+        if s.get("signal") not in ("FIRE", "PREP"):
+            continue
+
+        # Skip below threshold
+        if s.get("score", 0) < MIN_NTFY_SCORE:
+            continue
+
+        # Skip duplicate tickers
+        ticker = s.get("ticker")
+        if ticker in seen_tickers:
+            continue
+        seen_tickers.add(ticker)
+
+        result.append(s)
+
+    return result
 
 
 # ─── Console Summary ──────────────────────────────────────────────
@@ -131,28 +172,33 @@ def print_summary(bulls: list[dict], bears: list[dict]):
     print("  ELASTIC SCANNER RESULTS")
     print("=" * 65)
 
-    if not bulls and not bears:
-        print("  No signals found. Markets quiet or misaligned.")
+    # Filter for console too — only show actionable
+    ab = _filter_actionable(bulls)
+    abr = _filter_actionable(bears)
+
+    if not ab and not abr:
+        print("  No actionable signals. Markets quiet or misaligned.")
         print("=" * 65 + "\n")
         return
 
-    header = f"  {'TICKER':<8} {'SIGNAL':<10} {'SCORE':>5}  {'EXT':>5}  {'MTF'}"
+    header = f"  {'TICKER':<8} {'SIGNAL':<8} {'SCORE':>5}  {'EXT':>5}  {'MTF'}"
     sep = "  " + "-" * 55
 
-    if bulls:
-        print(f"\n  [+] TOP {TOP_N} BULL")
+    if ab:
+        print(f"\n  [+] BULLISH (top {TOP_N})")
         print(sep)
         print(header)
         print(sep)
-        for s in bulls[:TOP_N]:
-            print(f"  {s['ticker']:<8} {s['signal']:<10} {s['score']:>5.1f}  E:{s['ext']:>4.1f}  {s['mtf']}")
+        for s in ab[:TOP_N]:
+            print(f"  {s['ticker']:<8} {s['signal']:<8} {s['score']:>5}  E:{s['ext']:>4.1f}  {s['mtf']}")
 
-    if bears:
-        print(f"\n  [-] TOP {TOP_N} BEAR")
+    if abr:
+        print(f"\n  [-] BEARISH (top {TOP_N})")
         print(sep)
         print(header)
         print(sep)
-        for s in bears[:TOP_N]:
-            print(f"  {s['ticker']:<8} {s['signal']:<10} {s['score']:>5.1f}  E:{s['ext']:>4.1f}  {s['mtf']}")
+        for s in abr[:TOP_N]:
+            print(f"  {s['ticker']:<8} {s['signal']:<8} {s['score']:>5}  E:{s['ext']:>4.1f}  {s['mtf']}")
 
+    print(f"\n  {DISCLAIMER}")
     print("\n" + "=" * 65 + "\n")

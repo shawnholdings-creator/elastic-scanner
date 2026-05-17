@@ -1,80 +1,121 @@
 """
-Scoring Engine — Multi-Factor Composite Scoring
+Scoring Engine — Entry Quality Score (Additive)
 
-Produces a 0-100 composite score for each signal based on:
-MTF alignment, compression, momentum, volume, and extension.
+Additive scoring system (0-100) that rewards actionable setups
+and penalizes overextension. Each condition adds or subtracts points.
 
-Returns factor breakdown for future ML/AI ranking.
++25  MTF aligned (all 3 TFs agree)
++20  Recent compression present
++20  Fresh 4H flip / trigger
++15  ALMA momentum confirms direction
++10  Volume surge confirms
++10  Good extension (< 1.5 ATR from trail)
+-25  Extension > 2.5 ATR
+-40  Extension > 3.5 ATR (replaces -25)
 """
 
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config.settings import (
-    W_MTF, W_COMPRESSION, W_MOMENTUM, W_VOLUME, W_EXTENSION,
+    EQS_MTF_ALIGNED, EQS_COMPRESSION, EQS_FRESH_FLIP,
+    EQS_MOMENTUM, EQS_VOLUME, EQS_GOOD_EXT,
+    EQS_PENALTY_MID_EXT, EQS_PENALTY_HIGH_EXT,
+    FRESH_FLIP_BARS, COMP_FIRE_MIN, VOL_SURGE_MULT,
 )
 
 
 def score_signal(signal: dict) -> dict:
     """
-    Score a signal dict (from signal_engine.classify_signal).
-    
-    Adds 'score' (0-100 composite) and 'factors' (breakdown dict)
+    Score a signal using the additive Entry Quality Score system.
+
+    Adds 'score' (0-100 clamped) and 'factors' (breakdown dict)
     to the signal dict.
-    
+
     Returns the mutated signal dict.
     """
-    # ─── Factor 1: MTF Alignment (30%) ────────────────────────────
+    eqs = 0
+    factors = {}
+
+    # ─── +25 MTF Aligned ─────────────────────────────────────────
     mtf_str = signal.get("mtf", "")
-    plus_count = mtf_str.count("+")
-    minus_count = mtf_str.count("-")
+    direction = signal.get("direction", "MIXED")
 
-    if signal["direction"] == "BULL":
-        mtf_score = (plus_count / 3) * 100
-    elif signal["direction"] == "BEAR":
-        mtf_score = (minus_count / 3) * 100
+    if direction == "BULL":
+        mtf_aligned = mtf_str.count("+") == 3
+    elif direction == "BEAR":
+        mtf_aligned = mtf_str.count("-") == 3
     else:
-        mtf_score = 0
+        mtf_aligned = False
 
-    # ─── Factor 2: Compression (25%) ─────────────────────────────
+    if mtf_aligned:
+        eqs += EQS_MTF_ALIGNED
+        factors["mtf"] = EQS_MTF_ALIGNED
+    else:
+        factors["mtf"] = 0
+
+    # ─── +20 Recent Compression ──────────────────────────────────
     comp = signal.get("comp_score", 0)
-    comp_score = min(100, (comp / 5) * 100)
+    recent_comp = signal.get("recent_comp_max", comp)
+    has_compression = max(comp, recent_comp) >= COMP_FIRE_MIN
 
-    # ─── Factor 3: Momentum (20%) ────────────────────────────────
-    # ALMA rising + direction match = full score
+    if has_compression:
+        eqs += EQS_COMPRESSION
+        factors["compression"] = EQS_COMPRESSION
+    else:
+        factors["compression"] = 0
+
+    # ─── +20 Fresh 4H Flip ───────────────────────────────────────
+    flip_age = signal.get("flip_age", 999)
+    has_fresh_flip = flip_age <= FRESH_FLIP_BARS
+
+    if has_fresh_flip:
+        eqs += EQS_FRESH_FLIP
+        factors["fresh_flip"] = EQS_FRESH_FLIP
+    else:
+        factors["fresh_flip"] = 0
+
+    # ─── +15 Momentum Confirms ───────────────────────────────────
     alma_rising = signal.get("alma_rising", False)
-    is_bull = signal["direction"] == "BULL"
+    is_bull = direction == "BULL"
 
     if (is_bull and alma_rising) or (not is_bull and not alma_rising):
-        mom_score = 100
-    elif alma_rising is None:
-        mom_score = 0
+        eqs += EQS_MOMENTUM
+        factors["momentum"] = EQS_MOMENTUM
     else:
-        mom_score = 20  # momentum exists but wrong direction
+        factors["momentum"] = 0
 
-    # ─── Factor 4: Volume (15%) ──────────────────────────────────
+    # ─── +10 Volume Surge ────────────────────────────────────────
     vol_ratio = signal.get("vol_ratio", 1.0)
-    vol_score = min(100, vol_ratio * 50)  # 2.0x ratio = 100
 
-    # ─── Factor 5: Extension (10%) — inverse scoring ─────────────
+    if vol_ratio >= VOL_SURGE_MULT:
+        eqs += EQS_VOLUME
+        factors["volume"] = EQS_VOLUME
+    else:
+        factors["volume"] = 0
+
+    # ─── +10 Good Extension ──────────────────────────────────────
     ext = signal.get("ext", 0)
-    ext_score = max(0, 100 - ext * 25)  # 0 ext = 100, 4 ext = 0
 
-    # ─── Composite ───────────────────────────────────────────────
-    composite = (
-        W_MTF * mtf_score +
-        W_COMPRESSION * comp_score +
-        W_MOMENTUM * mom_score +
-        W_VOLUME * vol_score +
-        W_EXTENSION * ext_score
-    )
+    if ext <= 1.5:
+        eqs += EQS_GOOD_EXT
+        factors["extension"] = EQS_GOOD_EXT
+    else:
+        factors["extension"] = 0
 
-    signal["score"] = round(composite, 1)
-    signal["factors"] = {
-        "mtf": round(mtf_score, 1),
-        "compression": round(comp_score, 1),
-        "momentum": round(mom_score, 1),
-        "volume": round(vol_score, 1),
-        "extension": round(ext_score, 1),
-    }
+    # ─── Penalties ───────────────────────────────────────────────
+    if ext > 3.5:
+        eqs += EQS_PENALTY_HIGH_EXT  # -40
+        factors["ext_penalty"] = EQS_PENALTY_HIGH_EXT
+    elif ext > 2.5:
+        eqs += EQS_PENALTY_MID_EXT   # -25
+        factors["ext_penalty"] = EQS_PENALTY_MID_EXT
+    else:
+        factors["ext_penalty"] = 0
+
+    # ─── Clamp to 0-100 ─────────────────────────────────────────
+    eqs = max(0, min(100, eqs))
+
+    signal["score"] = eqs
+    signal["factors"] = factors
 
     return signal
