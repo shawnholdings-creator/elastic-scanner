@@ -19,7 +19,7 @@ import yfinance as yf
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config.settings import (
-    SP500_URL, NDX100_URL, FALLBACK_TICKERS, TIMEFRAMES,
+    SP500_URL, NDX100_URL, FALLBACK_TICKERS, INDEX_TICKERS, TIMEFRAMES,
     MIN_PRICE, MAX_PRICE, MIN_AVG_VOL, TOP_N, OUTPUT_DIR,
 )
 from src.elastic_engine import process_ticker_tf
@@ -74,6 +74,10 @@ def load_universe() -> list[str]:
     if not tickers:
         logger.warning("Using fallback ticker list")
         tickers = set(FALLBACK_TICKERS)
+
+    # Always include major indices
+    tickers.update(INDEX_TICKERS)
+    logger.info(f"  -> {len(INDEX_TICKERS)} index tickers added")
 
     result = sorted(tickers)
     logger.info(f"Universe: {len(result)} unique tickers")
@@ -157,8 +161,13 @@ def _resample_ohlcv(df: pd.DataFrame, freq: str) -> pd.DataFrame:
 
 
 # ─── Quality Gate ──────────────────────────────────────────────────
-def passes_quality(df_1d: pd.DataFrame) -> bool:
-    """Check price and volume quality gates using daily data."""
+def passes_quality(ticker: str, df_1d: pd.DataFrame) -> bool:
+    """Check price and volume quality gates using daily data.
+    Index tickers bypass this gate (no volume data, prices above MAX_PRICE)."""
+    # Index tickers always pass
+    if ticker.startswith("^") or ticker in INDEX_TICKERS:
+        return True
+
     if df_1d is None or df_1d.empty:
         return False
 
@@ -199,7 +208,7 @@ def run():
             continue
 
         # Quality gate (use daily data)
-        if not passes_quality(ticker_data["1D"]):
+        if not passes_quality(ticker, ticker_data["1D"]):
             skipped += 1
             continue
 

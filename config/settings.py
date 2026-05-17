@@ -66,6 +66,20 @@ FALLBACK_TICKERS = [
     "CAT", "GS", "BA", "GE", "SBUX",
 ]
 
+# Major indices — always included in every scan
+# ETF proxies used because they have volume data for scoring
+INDEX_TICKERS = [
+    "SPY",    # S&P 500
+    "DIA",    # DJIA
+    "QQQ",    # NASDAQ Composite (Nasdaq-100 proxy)
+    "IWB",    # Russell 1000
+    "^GSPC",  # S&P 500 Index
+    "^DJI",   # Dow Jones Industrial Average
+    "^IXIC",  # NASDAQ Composite Index
+    "^NYA",   # NYSE Composite Index
+    "^RUI",   # Russell 1000 Index
+]
+
 # ─── Timeframes ────────────────────────────────────────────────────
 TIMEFRAMES = {
     "4H": {"interval": "1h", "period": "60d", "resample": "4h"},
