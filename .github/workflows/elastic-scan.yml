@@ -1,0 +1,44 @@
+name: Elastic Scanner
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Every 30 min during US market hours (9:30 AM - 4:00 PM ET)
+    # ET = UTC-4 (summer) / UTC-5 (winter)
+    # 9:30 AM ET = 13:30 UTC, 4:00 PM ET = 20:00 UTC
+    # Using 13-20 UTC to cover both DST scenarios
+    - cron: "*/30 13-20 * * 1-5"
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Elastic Scanner
+        run: python -m src.main
+
+      - name: Upload scan results
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-${{ github.run_id }}
+          path: output/latest.csv
+          retention-days: 7
