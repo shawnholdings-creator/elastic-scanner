@@ -1,8 +1,15 @@
 """
-Elastic Scanner — Main Orchestrator
+Elastic Scanner — Main Orchestrator (v3.0 Weighted Scoring)
 
-Fetches universe → downloads OHLCV → runs elastic engine → classifies signals
-→ scores → ranks → exports CSV → pushes ntfy alerts.
+Fetches universe → downloads OHLCV → runs elastic engine → weighted scoring
+→ tier assignment → exports CSV → updates dashboard Gist → pushes ntfy alerts.
+
+v3.0 changes:
+  - No rigid all-pass gates; pure weighted scoring
+  - Sector strength (sector ETF trend alignment)
+  - Relative strength (stock vs SPY 5-day performance)
+  - Market regime (SPY above/below trail)
+  - Tiers: ELITE (90+), FIRE (80-89), PREP (70-79), suppress (<70)
 
 Usage:
     python -m src.main
@@ -21,6 +28,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config.settings import (
     SP500_URL, NDX100_URL, FALLBACK_TICKERS, INDEX_TICKERS, TIMEFRAMES,
     MIN_PRICE, MAX_PRICE, MIN_AVG_VOL, TOP_N, OUTPUT_DIR,
+    SECTOR_ETF_TICKERS, SECTOR_ETFS, TIER_PREP,
 )
 from src.elastic_engine import process_ticker_tf
 from src.signal_engine import classify_signal, extract_last_bar
@@ -40,14 +48,18 @@ def _fetch_html_tables(url: str) -> list[pd.DataFrame]:
     """Fetch HTML from URL with a proper User-Agent and parse tables."""
     import requests as req
     from io import StringIO
-    resp = req.get(url, headers={"User-Agent": "ElasticScanner/1.0"}, timeout=15)
+    resp = req.get(url, headers={"User-Agent": "ElasticScanner/3.0"}, timeout=15)
     resp.raise_for_status()
     return pd.read_html(StringIO(resp.text), header=0)
 
 
-def load_universe() -> list[str]:
-    """Load SP500 + NDX100 tickers from Wikipedia, deduped."""
+def load_universe() -> tuple[list[str], dict[str, str]]:
+    """
+    Load SP500 + NDX100 tickers from Wikipedia, deduped.
+    Returns (tickers, sector_map) where sector_map = {ticker: sector_name}.
+    """
     tickers = set()
+    sector_map = {}
 
     try:
         logger.info("Loading S&P 500 tickers...")
@@ -55,6 +67,12 @@ def load_universe() -> list[str]:
         sp_tickers = sp500["Symbol"].str.replace(".", "-", regex=False).tolist()
         tickers.update(sp_tickers)
         logger.info(f"  -> {len(sp_tickers)} S&P 500 tickers")
+
+        # Extract sector mapping
+        if "GICS Sector" in sp500.columns:
+            for _, row in sp500.iterrows():
+                t = row["Symbol"].replace(".", "-")
+                sector_map[t] = row["GICS Sector"]
     except Exception as e:
         logger.warning(f"Failed to load S&P 500: {e}")
 
@@ -75,13 +93,14 @@ def load_universe() -> list[str]:
         logger.warning("Using fallback ticker list")
         tickers = set(FALLBACK_TICKERS)
 
-    # Always include major indices
+    # Always include major indices + sector ETFs
     tickers.update(INDEX_TICKERS)
-    logger.info(f"  -> {len(INDEX_TICKERS)} index tickers added")
+    tickers.update(SECTOR_ETF_TICKERS)
+    logger.info(f"  -> {len(INDEX_TICKERS)} index tickers + {len(SECTOR_ETF_TICKERS)} sector ETFs added")
 
     result = sorted(tickers)
     logger.info(f"Universe: {len(result)} unique tickers")
-    return result
+    return result, sector_map
 
 
 # ─── Data Download ─────────────────────────────────────────────────
@@ -89,7 +108,7 @@ def download_data(tickers: list[str]) -> dict[str, dict[str, pd.DataFrame]]:
     """
     Bulk download OHLCV data for all tickers across all timeframes.
     Returns: {ticker: {"4H": df, "1D": df, "1W": df}}
-    
+
     Uses yfinance bulk download (1 HTTP call per TF) for speed.
     """
     data = {}
@@ -163,9 +182,9 @@ def _resample_ohlcv(df: pd.DataFrame, freq: str) -> pd.DataFrame:
 # ─── Quality Gate ──────────────────────────────────────────────────
 def passes_quality(ticker: str, df_1d: pd.DataFrame) -> bool:
     """Check price and volume quality gates using daily data.
-    Index tickers bypass this gate (no volume data, prices above MAX_PRICE)."""
-    # Index tickers always pass
-    if ticker.startswith("^") or ticker in INDEX_TICKERS:
+    Index tickers and sector ETFs bypass this gate."""
+    # Index tickers and sector ETFs always pass
+    if ticker.startswith("^") or ticker in INDEX_TICKERS or ticker in SECTOR_ETF_TICKERS:
         return True
 
     if df_1d is None or df_1d.empty:
@@ -180,26 +199,99 @@ def passes_quality(ticker: str, df_1d: pd.DataFrame) -> bool:
     )
 
 
+# ─── Market Context ───────────────────────────────────────────────
+def build_market_context(all_data: dict, tickers: list[str]) -> dict:
+    """
+    Build market-level context for scoring:
+    - SPY trend (above/below trail)
+    - Sector ETF trends
+    - Relative strength (5-day returns)
+    """
+    context = {
+        "spy_below_trail": False,
+        "sector_bull": {},
+        "spy_perf_5d": None,
+        "ticker_perf_5d": {},
+        "earnings_days": {},  # placeholder — no API for earnings yet
+    }
+
+    # SPY market regime
+    spy_data = all_data.get("SPY", {})
+    if "1D" in spy_data:
+        try:
+            spy_df = process_ticker_tf(spy_data["1D"])
+            spy_last = extract_last_bar(spy_df)
+            if spy_last:
+                context["spy_below_trail"] = not spy_last["is_bull"]
+
+                # SPY 5-day performance
+                spy_close = spy_data["1D"]["Close"]
+                if len(spy_close) >= 6:
+                    context["spy_perf_5d"] = float(
+                        (spy_close.iloc[-1] / spy_close.iloc[-6] - 1) * 100
+                    )
+        except Exception:
+            pass
+
+    # Sector ETF trends
+    for sector_name, etf_ticker in SECTOR_ETFS.items():
+        etf_data = all_data.get(etf_ticker, {})
+        if "1D" in etf_data:
+            try:
+                etf_df = process_ticker_tf(etf_data["1D"])
+                etf_last = extract_last_bar(etf_df)
+                if etf_last:
+                    context["sector_bull"][sector_name] = etf_last["is_bull"]
+            except Exception:
+                pass
+
+    # Ticker 5-day performance (for relative strength)
+    for ticker in tickers:
+        ticker_data = all_data.get(ticker, {})
+        if "1D" in ticker_data:
+            try:
+                close = ticker_data["1D"]["Close"]
+                if len(close) >= 6:
+                    context["ticker_perf_5d"][ticker] = float(
+                        (close.iloc[-1] / close.iloc[-6] - 1) * 100
+                    )
+            except Exception:
+                pass
+
+    return context
+
+
 # ─── Main Pipeline ────────────────────────────────────────────────
 def run():
-    """Execute the full Elastic Scanner pipeline."""
+    """Execute the full Elastic Scanner pipeline (v3.0 weighted scoring)."""
     logger.info("=" * 50)
-    logger.info("  ELASTIC SCANNER — Starting")
+    logger.info("  ELASTIC SCANNER v3.0 — Starting")
     logger.info("=" * 50)
     t_start = time.time()
 
-    # 1. Load universe
-    tickers = load_universe()
+    # 1. Load universe (now includes sector mapping)
+    tickers, sector_map = load_universe()
 
     # 2. Download data (3 bulk calls)
     all_data = download_data(tickers)
 
-    # 3. Process each ticker
+    # 3. Build market context (SPY regime, sector trends, relative strength)
+    logger.info("Building market context...")
+    market_context = build_market_context(all_data, tickers)
+    spy_regime = "BEAR" if market_context["spy_below_trail"] else "BULL"
+    logger.info(f"  SPY regime: {spy_regime}")
+    logger.info(f"  Sectors tracked: {len(market_context['sector_bull'])}")
+
+    # 4. Process each ticker
     signals = []
     skipped = 0
     processed = 0
 
     for ticker in tickers:
+        # Skip index/ETF tickers from signals (used for context only)
+        if ticker.startswith("^"):
+            continue
+
         ticker_data = all_data.get(ticker, {})
 
         # Skip if missing required TFs (monthly is optional)
@@ -229,24 +321,34 @@ def run():
             skipped += 1
             continue
 
-        # Classify signal (monthly is optional)
+        # Get sector for this ticker
+        sector = sector_map.get(ticker, "")
+
+        # Build signal (no rigid gates — every valid ticker gets one)
         signal = classify_signal(
             ticker,
             results["4H"],
             results["1D"],
             results["1W"],
             results.get("1M"),
+            sector=sector,
         )
 
         if signal:
-            signal = score_signal(signal)
-            signals.append(signal)
+            # Score with market context
+            signal = score_signal(signal, market_context)
+
+            # Only keep signals above suppress threshold
+            if signal["score"] >= TIER_PREP:
+                signals.append(signal)
 
         processed += 1
 
     logger.info(f"Processed: {processed} | Skipped: {skipped} | Signals: {len(signals)}")
 
-    # 4. Rank and split (pass all to alerts — filter happens there)
+    # 5. Rank by score (pure score ranking)
+    all_ranked = sorted(signals, key=lambda x: x["score"], reverse=True)
+
     bulls = sorted(
         [s for s in signals if s["direction"] == "BULL"],
         key=lambda x: x["score"],
@@ -259,16 +361,18 @@ def run():
         reverse=True,
     )
 
-    actionable = [s for s in signals if s.get("signal") in ("ELITE", "IDEAL", "SLINGSHOT", "PRIME", "FIRE", "PREP")]
-    logger.info(f"Actionable (FIRE+PREP): {len(actionable)} | EXTENDED (suppressed): {len(signals) - len(actionable)}")
+    # Count by tier
+    elite_count = sum(1 for s in signals if s.get("tier") == "ELITE")
+    fire_count = sum(1 for s in signals if s.get("tier") == "FIRE")
+    prep_count = sum(1 for s in signals if s.get("tier") == "PREP")
+    logger.info(f"Tiers: ELITE={elite_count} FIRE={fire_count} PREP={prep_count}")
 
-    # 5. Output
-    all_ranked = sorted(signals, key=lambda x: x["score"], reverse=True)
+    # 6. Output
     export_csv(all_ranked, OUTPUT_DIR)
     export_dashboard_json(all_ranked, len(tickers))
     print_summary(bulls, bears)
 
-    # 6. Push alerts (only actionable signals sent to ntfy)
+    # 7. Push alerts
     send_ntfy(bulls, bears)
 
     elapsed = time.time() - t_start

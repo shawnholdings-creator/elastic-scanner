@@ -1,19 +1,16 @@
 """
-Signal Engine — Full Verdict Classification (Dashboard v2.5 Parity)
+Signal Engine — Weighted Classification (v3.0)
 
-Classifies tickers using the same priority ladder as the PineScript
-Elastic Dashboard v2.5:
+No rigid all-pass gates. Every ticker that passes MTF extraction
+gets a base dict with all computed values. The scoring engine
+assigns tiers (ELITE/FIRE/PREP/SUPPRESS) by weighted score alone.
 
-1. ELITE ENTRY       - all 7 conditions (expansion + candle + ALMA accel + vol + low ext)
-2. IDEAL ENTRY       - pullback to ALMA21 support zone + compressed/building
-3. SLINGSHOT FIRED   - fresh flip + wasCoiled + MTF + expansionFire
-4. PRIME ENTRY       - coiled + aligned + low ext + above ALMA34 + above trail
-5. SLING LOADING     - compScore >= 3 + MTF aligned (armed)
-6. FIRE              - fresh 4H flip + comp + momentum + vol (simplified sling)
-7. PREP              - MTF aligned + compressed + ideal zone
-8. EXTENDED          - aligned but overextended (suppressed from ntfy)
+This module:
+  1. Extracts MTF alignment + 4H values
+  2. Builds a base signal dict for the scoring engine
+  3. Determines direction (BULL/BEAR/MIXED)
 
-Only ELITE, IDEAL, SLINGSHOT, FIRE, PRIME, and PREP are actionable.
+Classification is purely score-based — partial confluence allowed.
 """
 
 import sys, os
@@ -26,10 +23,14 @@ from config.settings import (
 
 
 def classify_signal(ticker: str, data_4h: dict, data_1d: dict,
-                    data_1w: dict, data_1m: dict = None) -> dict | None:
+                    data_1w: dict, data_1m: dict = None,
+                    sector: str = "") -> dict | None:
     """
-    Classify a ticker using Dashboard v2.5 verdict priority ladder.
-    Returns dict with signal info or None if no signal.
+    Build a signal dict for the scoring engine.
+    No rigid gates — every ticker with valid MTF data gets a signal.
+    Direction is determined by majority vote across TFs.
+
+    Returns dict with signal info or None if data is missing.
     """
     if not all([data_4h, data_1d, data_1w]):
         return None
@@ -42,8 +43,8 @@ def classify_signal(ticker: str, data_4h: dict, data_1d: dict,
 
     triple_bull = bull_4h and bull_1d and bull_1w
     triple_bear = (not bull_4h) and (not bull_1d) and (not bull_1w)
-    mtf_aligned = triple_bull or triple_bear
 
+    # Direction: triple alignment → strong direction; otherwise MIXED (suppressed by scoring)
     direction = "BULL" if triple_bull else "BEAR" if triple_bear else "MIXED"
     mtf_label = _mtf_label(bull_4h, bull_1d, bull_1w)
 
@@ -78,22 +79,11 @@ def classify_signal(ticker: str, data_4h: dict, data_1d: dict,
     open_air = data_4h.get("open_air", False)
     tension = data_4h.get("tension", 1.0)
 
-    # Momentum confirms direction
-    if triple_bull:
-        momentum_ok = alma_rising
-    elif triple_bear:
-        momentum_ok = not alma_rising
-    else:
-        momentum_ok = False
-
-    # Slingshot detection
-    flip_event = flip_age == 0
-    was_coiled = recent_comp >= 3
-
-    # Build base result dict
-    base = {
+    # Build signal dict — scoring engine handles all tier assignment
+    return {
         "ticker": ticker,
         "direction": direction,
+        "sector": sector,
         "ext": round(ext, 2),
         "mtf": mtf_label,
         "comp_score": comp_now,
@@ -110,78 +100,9 @@ def classify_signal(ticker: str, data_4h: dict, data_1d: dict,
         "is_stretched": is_stretched,
         "tension": round(tension, 2),
         "open_air": open_air,
+        "close": close,
+        "trail": trail,
     }
-
-    # ─── 1. ELITE ENTRY ──────────────────────────────────────────
-    elite_bull = (triple_bull and expansion_fire and rv_bull and
-                  strong_bull_bar and alma_accel_bull and
-                  ext <= EXT_ELITE and close > alma8 and close > trail)
-    elite_bear = (triple_bear and expansion_fire and
-                  strong_bear_bar and alma_accel_bear and
-                  ext <= EXT_ELITE and close < alma8 and close < trail)
-
-    if elite_bull or elite_bear:
-        return {**base, "signal": "ELITE"}
-
-    # ─── 2. IDEAL ENTRY ──────────────────────────────────────────
-    if direction == "BULL":
-        ideal = (bull_count >= 3 and close > trail and
-                 close <= alma21 and atr14 > 0 and
-                 close >= alma21 - 2.0 * atr14 and
-                 not is_stretched and (is_compressed or is_building))
-    elif direction == "BEAR":
-        ideal = (bull_count <= 1 and close < trail and
-                 close >= alma21 and atr14 > 0 and
-                 close <= alma21 + 2.0 * atr14 and
-                 not is_stretched and (is_compressed or is_building))
-    else:
-        ideal = False
-
-    if ideal:
-        return {**base, "signal": "IDEAL"}
-
-    # ─── 3. SLINGSHOT FIRED ──────────────────────────────────────
-    sling_bull = (flip_event and is_bull and was_coiled and
-                  bull_1d and bull_1w and expansion_fire)
-    sling_bear = (flip_event and not is_bull and was_coiled and
-                  not bull_1d and not bull_1w and expansion_fire)
-
-    if sling_bull or sling_bear:
-        return {**base, "signal": "SLINGSHOT"}
-
-    # ─── 4. PRIME ENTRY ──────────────────────────────────────────
-    if direction == "BULL":
-        prime = ((is_compressed or is_building) and bull_count >= 3 and
-                 ext <= EXT_FIRE_MAX and close > alma34 and close > trail)
-    elif direction == "BEAR":
-        prime = ((is_compressed or is_building) and bull_count <= 1 and
-                 ext <= EXT_FIRE_MAX and close < alma34 and close < trail)
-    else:
-        prime = False
-
-    if prime:
-        return {**base, "signal": "PRIME"}
-
-    # ─── 5. FIRE ─────────────────────────────────────────────────
-    if (mtf_aligned
-        and flip_age <= FRESH_FLIP_BARS
-        and recent_comp >= COMP_FIRE_MIN
-        and momentum_ok
-        and vol_ratio >= VOL_SURGE_MULT
-        and ext <= EXT_FIRE_MAX):
-        return {**base, "signal": "FIRE"}
-
-    # ─── 6. PREP ─────────────────────────────────────────────────
-    if (mtf_aligned
-        and comp_now >= COMP_PREP_MIN
-        and ext <= EXT_LOW):
-        return {**base, "signal": "PREP"}
-
-    # ─── 7. EXTENDED ─────────────────────────────────────────────
-    if (mtf_aligned and ext > EXT_HIGH):
-        return {**base, "signal": "EXTENDED"}
-
-    return None
 
 
 def _mtf_label(bull_4h: bool, bull_1d: bool, bull_1w: bool) -> str:

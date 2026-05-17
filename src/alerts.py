@@ -5,9 +5,17 @@ Handles all output: writing scan results to CSV, pushing
 actionable signals to mobile via ntfy, and updating the
 AI Dashboard Gist feed.
 
-ntfy format:
-    ticker score (one per line, sorted highest first)
-    disclaimer at end of every message
+v3.0 ntfy format:
+    📈 BULLISH
+    AMZN 92 ELITE
+    NVDA 86 FIRE
+
+    📉 BEARISH
+    AAPL 84 FIRE
+    CRM 76 PREP
+
+    EDUCATIONAL ANALYSIS ONLY. NOT FINANCIAL ADVICE.
+    NOT A RECOMMENDATION TO BUY, SELL, OR HOLD.
 """
 
 import csv
@@ -42,8 +50,8 @@ def export_csv(signals: list[dict], output_dir: str = OUTPUT_DIR) -> str:
     latest_path = os.path.join(output_dir, "latest.csv")
 
     columns = [
-        "ticker", "signal", "direction", "score", "ext",
-        "mtf", "comp_score", "vol_ratio", "timestamp",
+        "ticker", "tier", "direction", "score", "ext",
+        "mtf", "comp_score", "vol_ratio", "sector", "timestamp",
     ]
 
     for path in [ts_path, latest_path]:
@@ -63,24 +71,20 @@ def send_ntfy(bulls: list[dict], bears: list[dict]) -> bool:
     """
     Push actionable signals to ntfy.sh.
 
-    Only sends FIRE and PREP signals with score >= MIN_NTFY_SCORE.
-    EXTENDED signals are suppressed entirely.
-    Duplicate tickers are removed.
+    v3.0 format:
+        📈 BULLISH
+        AMZN 92 ELITE
+        NVDA 86 FIRE
 
-    Format:
-        (chart emoji) ELASTIC BULLISH
-        AMZN 92
-        NVDA 88
-
-        (chart emoji) ELASTIC BEARISH
-        AAPL 86
-        CRM 81
+        📉 BEARISH
+        AAPL 84 FIRE
+        CRM 76 PREP
 
         DISCLAIMER
 
     Returns True if sent successfully.
     """
-    # Filter: actionable only (FIRE + PREP), score >= threshold, deduped
+    # Filter: score >= threshold, deduped
     actionable_bulls = _filter_actionable(bulls)
     actionable_bears = _filter_actionable(bears)
 
@@ -91,27 +95,27 @@ def send_ntfy(bulls: list[dict], bears: list[dict]) -> bool:
     lines = []
 
     if actionable_bulls:
-        lines.append("\U0001F4C8 ELASTIC BULLISH")
+        lines.append("\U0001F4C8 BULLISH")
         for s in actionable_bulls[:TOP_N]:
-            lines.append(f"{s['ticker']} {s['score']}")
+            lines.append(f"{s['ticker']} {s['score']} {s.get('tier', '')}")
         lines.append("")
 
     if actionable_bears:
-        lines.append("\U0001F4C9 ELASTIC BEARISH")
+        lines.append("\U0001F4C9 BEARISH")
         for s in actionable_bears[:TOP_N]:
-            lines.append(f"{s['ticker']} {s['score']}")
+            lines.append(f"{s['ticker']} {s['score']} {s.get('tier', '')}")
         lines.append("")
 
     lines.append(DISCLAIMER)
 
     body = "\n".join(lines)
 
-    # Priority: high if any FIRE signal present
-    has_fire = any(
-        s.get("signal") == "FIRE"
+    # Priority: high if any ELITE signal present
+    has_elite = any(
+        s.get("tier") == "ELITE"
         for s in actionable_bulls + actionable_bears
     )
-    priority = "high" if has_fire else "default"
+    priority = "high" if has_elite else "default"
     title = "Elastic Scanner"
 
     try:
@@ -136,13 +140,11 @@ def send_ntfy(bulls: list[dict], bears: list[dict]) -> bool:
 def _filter_actionable(signals: list[dict]) -> list[dict]:
     """
     Filter signals to only actionable ones:
-    - ELITE, IDEAL, SLINGSHOT, PRIME, FIRE, PREP (no EXTENDED)
-    - Score >= MIN_NTFY_SCORE
+    - Score >= MIN_NTFY_SCORE (70)
+    - Tier is ELITE, FIRE, or PREP (not SUPPRESS)
     - Deduplicated by ticker (keep highest score)
     - Sorted by score descending
     """
-    ACTIONABLE_SIGNALS = {"ELITE", "IDEAL", "SLINGSHOT", "PRIME", "FIRE", "PREP"}
-
     seen_tickers = set()
     result = []
 
@@ -150,12 +152,12 @@ def _filter_actionable(signals: list[dict]) -> list[dict]:
     sorted_signals = sorted(signals, key=lambda x: x.get("score", 0), reverse=True)
 
     for s in sorted_signals:
-        # Skip non-actionable signal types
-        if s.get("signal") not in ACTIONABLE_SIGNALS:
-            continue
-
         # Skip below threshold
         if s.get("score", 0) < MIN_NTFY_SCORE:
+            continue
+
+        # Skip suppressed tier
+        if s.get("tier") == "SUPPRESS":
             continue
 
         # Skip duplicate tickers
@@ -173,7 +175,7 @@ def _filter_actionable(signals: list[dict]) -> list[dict]:
 def print_summary(bulls: list[dict], bears: list[dict]):
     """Print a formatted summary table to stdout."""
     print("\n" + "=" * 65)
-    print("  ELASTIC SCANNER RESULTS")
+    print("  ELASTIC SCANNER v3.0 RESULTS")
     print("=" * 65)
 
     # Filter for console too — only show actionable
@@ -185,7 +187,7 @@ def print_summary(bulls: list[dict], bears: list[dict]):
         print("=" * 65 + "\n")
         return
 
-    header = f"  {'TICKER':<8} {'SIGNAL':<8} {'SCORE':>5}  {'EXT':>5}  {'MTF'}"
+    header = f"  {'TICKER':<8} {'TIER':<8} {'SCORE':>5}  {'EXT':>5}  {'MTF'}"
     sep = "  " + "-" * 55
 
     if ab:
@@ -194,7 +196,7 @@ def print_summary(bulls: list[dict], bears: list[dict]):
         print(header)
         print(sep)
         for s in ab[:TOP_N]:
-            print(f"  {s['ticker']:<8} {s['signal']:<8} {s['score']:>5}  E:{s['ext']:>4.1f}  {s['mtf']}")
+            print(f"  {s['ticker']:<8} {s.get('tier', ''):<8} {s['score']:>5}  E:{s['ext']:>4.1f}  {s['mtf']}")
 
     if abr:
         print(f"\n  [-] BEARISH (top {TOP_N})")
@@ -202,7 +204,7 @@ def print_summary(bulls: list[dict], bears: list[dict]):
         print(header)
         print(sep)
         for s in abr[:TOP_N]:
-            print(f"  {s['ticker']:<8} {s['signal']:<8} {s['score']:>5}  E:{s['ext']:>4.1f}  {s['mtf']}")
+            print(f"  {s['ticker']:<8} {s.get('tier', ''):<8} {s['score']:>5}  E:{s['ext']:>4.1f}  {s['mtf']}")
 
     print(f"\n  {DISCLAIMER}")
     print("\n" + "=" * 65 + "\n")
@@ -245,7 +247,7 @@ def export_dashboard_json(signals: list[dict], tickers_scanned: int) -> bool:
         "signals": [
             {
                 "ticker": s["ticker"],
-                "signal": s["signal"],
+                "signal": s.get("tier", "PREP"),
                 "direction": s["direction"],
                 "score": s["score"],
                 "ext": round(s.get("ext", 0), 1),

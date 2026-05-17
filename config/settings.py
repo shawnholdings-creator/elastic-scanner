@@ -45,23 +45,34 @@ TENSION_STRETCHED = 1.40    # tensionVal > this = HOT
 CANDLE_BODY_MIN = 0.60      # minimum body % of range
 CANDLE_CLOSE_ZONE = 0.25    # close must be in top/bottom 25% of range
 
-# ─── Entry Quality Score (additive, 0-100 scale) ──────────────────
-EQS_MTF_ALIGNED = 25       # all 3+ TFs agree
-EQS_COMPRESSION = 20       # recent compression present
-EQS_FRESH_FLIP = 20        # fresh 4H flip / trigger
-EQS_MOMENTUM = 15          # ALMA momentum confirms direction
-EQS_VOLUME = 10            # volume surge confirms
-EQS_GOOD_EXT = 10          # extension in ideal zone (< 1.5 ATR)
-EQS_PENALTY_MID_EXT = -25  # ext > 2.5 ATR penalty
-EQS_PENALTY_HIGH_EXT = -40 # ext > 3.5 ATR penalty (replaces mid)
+# ─── Weighted Score (additive, 0-100+ scale) ──────────────────────
+# Base factors
+W_MTF_ALIGNED = 25         # all 3+ TFs agree
+W_COMPRESSION = 20         # recent compression present
+W_FRESH_FLIP = 20          # fresh 4H flip / trigger
+W_ALMA_MOMENTUM = 10       # ALMA momentum confirms direction
+W_RVOL = 10                # relative volume surge
+W_SECTOR_STRENGTH = 10     # sector ETF aligned with direction
+W_RELATIVE_STRENGTH = 10   # stock outperforming SPY
 
-# Bonus points for v2.5 precision filters
-EQS_EXPANSION_FIRE = 10    # compression→expansion transition
-EQS_CANDLE_QUALITY = 5     # strong directional candle
-EQS_ALMA_ACCEL = 5         # ALMA acceleration confirms
+# Penalties
+P_MID_EXT = -20            # extATR > 2.5
+P_HIGH_EXT = -40           # extATR > 3.5 (replaces mid)
+P_EARNINGS_NEAR = -25      # earnings within 7 days
+P_WEAK_REGIME = -15        # weak market regime (SPY below trail)
+
+# ─── Tier Thresholds ──────────────────────────────────────────────
+TIER_ELITE = 90    # 90+ = ELITE
+TIER_FIRE = 80     # 80-89 = FIRE
+TIER_PREP = 70     # 70-79 = PREP
+TIER_SUPPRESS = 70 # <70 suppressed
+
+# ─── Anti-Chase ──────────────────────────────────────────────────
+# Extension beyond this = fully suppressed regardless of score
+EXT_HARD_CEILING = 4.0
 
 # ─── ntfy Alert Thresholds ─────────────────────────────────────────
-MIN_NTFY_SCORE = 75     # minimum score to include in ntfy alert
+MIN_NTFY_SCORE = 70     # minimum score to include in ntfy alert
 
 # ─── Quality Gate ──────────────────────────────────────────────────
 MIN_PRICE = 15.0
@@ -94,6 +105,25 @@ INDEX_TICKERS = [
     "^NYA",   # NYSE Composite Index
     "^RUI",   # Russell 1000 Index
 ]
+
+# ─── Sector ETF Map ───────────────────────────────────────────────
+# Maps sector names to ETF tickers for sector strength scoring
+SECTOR_ETFS = {
+    "Technology": "XLK",
+    "Health Care": "XLV",
+    "Financials": "XLF",
+    "Consumer Discretionary": "XLY",
+    "Communication Services": "XLC",
+    "Industrials": "XLI",
+    "Consumer Staples": "XLP",
+    "Energy": "XLE",
+    "Utilities": "XLU",
+    "Real Estate": "XLRE",
+    "Materials": "XLB",
+}
+
+# All sector ETFs — always downloaded alongside universe
+SECTOR_ETF_TICKERS = list(SECTOR_ETFS.values())
 
 # ─── Timeframes ────────────────────────────────────────────────────
 TIMEFRAMES = {
