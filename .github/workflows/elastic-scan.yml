@@ -3,11 +3,10 @@ name: Elastic Scanner
 on:
   workflow_dispatch:
   schedule:
-    # Every 30 min during US market hours (9:30 AM - 4:00 PM ET)
+    # Every hour during US market hours (9:00 AM - 5:00 PM ET)
     # ET = UTC-4 (summer) / UTC-5 (winter)
-    # 9:30 AM ET = 13:30 UTC, 4:00 PM ET = 20:00 UTC
-    # Using 13-20 UTC to cover both DST scenarios
-    - cron: "*/30 13-20 * * 1-5"
+    # 13:00 UTC = 9 AM ET, 21:00 UTC = 5 PM ET
+    - cron: "0 13-21 * * 1-5"
 
 jobs:
   scan:
