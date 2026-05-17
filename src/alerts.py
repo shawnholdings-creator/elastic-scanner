@@ -1,8 +1,9 @@
 """
-Alerts — CSV Export + ntfy Push Notifications
+Alerts — CSV Export + ntfy Push + Dashboard Gist
 
-Handles all output: writing scan results to CSV and pushing
-actionable signals (FIRE + PREP only) to mobile via ntfy.
+Handles all output: writing scan results to CSV, pushing
+actionable signals to mobile via ntfy, and updating the
+AI Dashboard Gist feed.
 
 ntfy format:
     ticker score (one per line, sorted highest first)
@@ -10,6 +11,7 @@ ntfy format:
 """
 
 import csv
+import json
 import logging
 import os
 from datetime import datetime
@@ -204,3 +206,74 @@ def print_summary(bulls: list[dict], bears: list[dict]):
 
     print(f"\n  {DISCLAIMER}")
     print("\n" + "=" * 65 + "\n")
+
+
+# ─── Dashboard Gist Export ────────────────────────────────────────
+def _score_to_grade(score: int) -> str:
+    """Convert numeric score to letter grade."""
+    if score >= 90:
+        return "A"
+    elif score >= 80:
+        return "B"
+    elif score >= 70:
+        return "C"
+    return "D"
+
+
+def export_dashboard_json(signals: list[dict], tickers_scanned: int) -> bool:
+    """
+    Push actionable signals to a GitHub Gist for the AI Dashboard.
+
+    Reads GIST_ID and GIST_TOKEN from environment variables.
+    Returns True if successful.
+    """
+    gist_id = os.environ.get("GIST_ID", "")
+    gist_token = os.environ.get("GIST_TOKEN", "")
+
+    if not gist_id or not gist_token:
+        logger.warning("GIST_ID / GIST_TOKEN not set — skipping dashboard export")
+        return False
+
+    # Filter to actionable signals only
+    actionable = _filter_actionable(signals)
+
+    # Build payload matching dashboard schema
+    payload = {
+        "timestamp": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "tickers_scanned": tickers_scanned,
+        "actionable_count": len(actionable),
+        "signals": [
+            {
+                "ticker": s["ticker"],
+                "signal": s["signal"],
+                "direction": s["direction"],
+                "score": s["score"],
+                "ext": round(s.get("ext", 0), 1),
+                "grade": _score_to_grade(s["score"]),
+            }
+            for s in actionable[:20]  # cap at 20 for payload size
+        ],
+    }
+
+    try:
+        resp = requests.patch(
+            f"https://api.github.com/gists/{gist_id}",
+            headers={
+                "Authorization": f"Bearer {gist_token}",
+                "Accept": "application/vnd.github+json",
+            },
+            json={
+                "files": {
+                    "dashboard.json": {
+                        "content": json.dumps(payload, indent=2),
+                    }
+                }
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        logger.info(f"Dashboard Gist updated ({len(actionable)} signals)")
+        return True
+    except Exception as e:
+        logger.error(f"Dashboard Gist update failed: {e}")
+        return False

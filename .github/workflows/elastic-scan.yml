@@ -33,6 +33,9 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run Elastic Scanner
+        env:
+          GIST_ID: ${{ secrets.GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
         run: python -m src.main
 
       - name: Upload scan results

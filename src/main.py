@@ -25,7 +25,7 @@ from config.settings import (
 from src.elastic_engine import process_ticker_tf
 from src.signal_engine import classify_signal, extract_last_bar
 from src.scoring import score_signal
-from src.alerts import export_csv, send_ntfy, print_summary
+from src.alerts import export_csv, send_ntfy, print_summary, export_dashboard_json
 
 logging.basicConfig(
     level=logging.INFO,
@@ -265,6 +265,7 @@ def run():
     # 5. Output
     all_ranked = sorted(signals, key=lambda x: x["score"], reverse=True)
     export_csv(all_ranked, OUTPUT_DIR)
+    export_dashboard_json(all_ranked, len(tickers))
     print_summary(bulls, bears)
 
     # 6. Push alerts (only actionable signals sent to ntfy)
