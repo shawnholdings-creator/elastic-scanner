@@ -1,12 +1,22 @@
 name: Elastic Scanner
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:  # Manual trigger — always runs
   schedule:
-    # Every hour during US market hours (9:00 AM - 5:00 PM ET)
-    # ET = UTC-4 (summer) / UTC-5 (winter)
-    # 13:00 UTC = 9 AM ET, 21:00 UTC = 5 PM ET
-    - cron: "0 13-21 * * 1-5"
+    # ── Every 15 minutes during regular market hours (Mon–Fri) ──
+    # Market hours: 9:30 AM – 4:00 PM ET
+    # ET = UTC-4 (summer DST) → 13:30–20:00 UTC
+    # Cron can't do :30, so we run :00/:15/:30/:45 from 13–20 UTC
+    # and the market-hours guard in the job skips pre-9:30 runs.
+    - cron: "0,15,30,45 13-20 * * 1-5"
+
+    # ── Open scan — 9:35 AM ET (13:35 UTC) ──
+    # 5 min after open to let first candles print
+    - cron: "35 13 * * 1-5"
+
+    # ── Near-close scan — 3:55 PM ET (19:55 UTC) ──
+    # Final snapshot before market close
+    - cron: "55 19 * * 1-5"
 
 jobs:
   scan:
@@ -14,15 +24,60 @@ jobs:
     timeout-minutes: 10
 
     steps:
+      - name: Check market hours
+        id: market
+        run: |
+          # Current UTC hour and minute
+          HOUR=$(date -u +%H)
+          MIN=$(date -u +%M)
+          DOW=$(date -u +%u)  # 1=Mon, 7=Sun
+          NOW_MIN=$((HOUR * 60 + MIN))
+          # 9:30 AM ET = 13:30 UTC = minute 810
+          OPEN_MIN=810
+          # 4:00 PM ET = 20:00 UTC = minute 1200
+          CLOSE_MIN=1200
+
+          echo "UTC time: ${HOUR}:${MIN} (DOW=$DOW, total_min=$NOW_MIN)"
+
+          # Manual dispatch always runs
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "status=open" >> $GITHUB_OUTPUT
+            echo "Manual trigger — running scan"
+            exit 0
+          fi
+
+          # Weekend guard
+          if [ "$DOW" -gt 5 ]; then
+            echo "status=closed" >> $GITHUB_OUTPUT
+            echo "Weekend — skipping"
+            exit 0
+          fi
+
+          # Market hours guard
+          if [ "$NOW_MIN" -ge "$OPEN_MIN" ] && [ "$NOW_MIN" -le "$CLOSE_MIN" ]; then
+            echo "status=open" >> $GITHUB_OUTPUT
+            echo "Market is OPEN — running scan"
+          else
+            echo "status=closed" >> $GITHUB_OUTPUT
+            echo "Market is CLOSED (pre-open or post-close) — skipping"
+          fi
+
+      - name: Skip if market closed
+        if: steps.market.outputs.status == 'closed'
+        run: echo "⏸ Market closed — scan skipped. Next scan at market open."
+
       - name: Checkout repo
+        if: steps.market.outputs.status == 'open'
         uses: actions/checkout@v4
 
       - name: Set up Python
+        if: steps.market.outputs.status == 'open'
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Cache pip packages
+        if: steps.market.outputs.status == 'open'
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
@@ -30,17 +85,30 @@ jobs:
           restore-keys: pip-
 
       - name: Install dependencies
+        if: steps.market.outputs.status == 'open'
         run: pip install -r requirements.txt
 
       - name: Run Elastic Scanner
+        if: steps.market.outputs.status == 'open'
         env:
           GIST_ID: ${{ secrets.GIST_ID }}
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
         run: python -m src.main
 
       - name: Upload scan results
+        if: steps.market.outputs.status == 'open'
         uses: actions/upload-artifact@v4
         with:
           name: scan-${{ github.run_id }}
           path: output/latest.csv
           retention-days: 7
+
+      - name: Archive daily close snapshot
+        if: steps.market.outputs.status == 'open'
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-${{ github.run_id }}-${{ github.run_number }}
+          path: |
+            output/latest.csv
+            output/elastic_scan_*.csv
+          retention-days: 30
