@@ -5,18 +5,20 @@ Handles all output: writing scan results to CSV, pushing
 actionable signals to mobile via ntfy, and updating the
 AI Dashboard Gist feed.
 
-v3.0 ntfy format:
-    📈 BULLISH
-    AMZN 92 ELITE
-    NVDA 86 FIRE
+v4.0 ntfy — State-aware transition alerts:
+    Only fires when a ticker's setup CHANGES INTO:
+    SLINGSHOT, TRIGGER, ELITE, or FIRE.
 
-    📉 BEARISH
-    AAPL 84 FIRE
-    CRM 76 PREP
+    🚨 NEW SETUP ALERTS
+    AMZN → BULLISH SLINGSHOT (A) 92
+    NVDA → BULLISH FIRE (B) 86
 
     EDUCATIONAL ANALYSIS ONLY. NOT FINANCIAL ADVICE.
     NOT A RECOMMENDATION TO BUY, SELL, OR HOLD.
 """
+
+# Setup types that trigger ntfy alerts on transition
+ALERT_SETUPS = {"SLINGSHOT", "TRIGGER", "ELITE", "FIRE"}
 
 import csv
 import json
@@ -66,7 +68,137 @@ def export_csv(signals: list[dict], output_dir: str = OUTPUT_DIR) -> str:
     return ts_path
 
 
-# ─── ntfy Push ─────────────────────────────────────────────────────
+# ─── ntfy Push — State-Aware Transitions ───────────────────────────
+def fetch_previous_verdicts() -> dict[str, str]:
+    """
+    Fetch the current dashboard.json from Gist to get previous verdicts.
+    Returns a dict of {ticker: verdict_string} e.g. {"AMZN": "BULLISH SLINGSHOT"}.
+    Returns empty dict on failure (treats all signals as new).
+    """
+    gist_id = os.environ.get("GIST_ID", "")
+    gist_token = os.environ.get("GIST_TOKEN", "")
+
+    if not gist_id or not gist_token:
+        logger.warning("GIST_ID/GIST_TOKEN not set — no previous state available")
+        return {}
+
+    try:
+        resp = requests.get(
+            f"https://api.github.com/gists/{gist_id}",
+            headers={
+                "Authorization": f"Bearer {gist_token}",
+                "Accept": "application/vnd.github+json",
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        content = resp.json().get("files", {}).get("dashboard.json", {}).get("content", "")
+        if not content:
+            return {}
+        data = json.loads(content)
+        return {
+            s["ticker"]: s.get("verdict", "")
+            for s in data.get("signals", [])
+        }
+    except Exception as e:
+        logger.warning(f"Could not fetch previous verdicts: {e}")
+        return {}
+
+
+def _extract_setup_type(verdict: str) -> str:
+    """
+    Extract the setup keyword from a verdict string.
+    e.g. "BULLISH SLINGSHOT" → "SLINGSHOT", "COIL" → "COIL", "READY" → "READY"
+    """
+    parts = verdict.upper().split()
+    # Check last word first ("BULLISH SLINGSHOT" → "SLINGSHOT")
+    for keyword in reversed(parts):
+        if keyword in ALERT_SETUPS:
+            return keyword
+    return parts[-1] if parts else ""
+
+
+def send_ntfy_transitions(
+    current_signals: list[dict],
+    previous_verdicts: dict[str, str],
+) -> bool:
+    """
+    Send ntfy alert ONLY for tickers whose setup just transitioned
+    INTO SLINGSHOT, TRIGGER, ELITE, or FIRE.
+
+    Compares current scan verdicts against previous Gist state.
+    Includes conviction grade in the alert message.
+
+    Returns True if alert was sent.
+    """
+    transitions = []
+
+    for s in current_signals:
+        ticker = s.get("ticker", "")
+        verdict = s.get("verdict", s.get("signal", ""))
+        current_setup = _extract_setup_type(verdict)
+
+        # Only care about transitions INTO alert-worthy setups
+        if current_setup not in ALERT_SETUPS:
+            continue
+
+        # Check what the ticker was BEFORE
+        prev_verdict = previous_verdicts.get(ticker, "")
+        prev_setup = _extract_setup_type(prev_verdict) if prev_verdict else ""
+
+        # Alert if: ticker is new, or setup type changed
+        if prev_setup != current_setup:
+            transitions.append(s)
+
+    if not transitions:
+        logger.info("No setup transitions detected — skipping ntfy")
+        return False
+
+    # Build message
+    lines = ["\U0001F6A8 NEW SETUP ALERTS", ""]
+
+    for s in sorted(transitions, key=lambda x: x.get("score", 0), reverse=True)[:TOP_N]:
+        ticker = s["ticker"]
+        verdict = s.get("verdict", s.get("signal", ""))
+        grade = _score_to_grade(s.get("score", 0))
+        score = s.get("score", 0)
+        lines.append(f"{ticker} → {verdict} ({grade}) {score}")
+
+    lines.append("")
+    lines.append(DISCLAIMER)
+
+    body = "\n".join(lines)
+
+    # Priority: high if any A-grade or SLINGSHOT
+    has_high = any(
+        _score_to_grade(s.get("score", 0)) == "A" or
+        _extract_setup_type(s.get("verdict", "")) == "SLINGSHOT"
+        for s in transitions
+    )
+    priority = "high" if has_high else "default"
+    title = f"AI Cockpit — {len(transitions)} Setup Transition{'s' if len(transitions) != 1 else ''}"
+
+    try:
+        resp = requests.post(
+            NTFY_URL,
+            data=body.encode("utf-8"),
+            headers={
+                "Title": title,
+                "Priority": priority,
+                "Tags": "rotating_light",
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        tickers_str = ", ".join(s["ticker"] for s in transitions[:5])
+        logger.info(f"ntfy transition alert sent ({priority} priority, {len(transitions)} transitions: {tickers_str})")
+        return True
+    except Exception as e:
+        logger.error(f"ntfy transition alert failed: {e}")
+        return False
+
+
+# ─── Legacy ntfy Push (kept as fallback) ───────────────────────────
 def send_ntfy(bulls: list[dict], bears: list[dict]) -> bool:
     """
     Push actionable signals to ntfy.sh.

@@ -33,7 +33,10 @@ from config.settings import (
 from src.elastic_engine import process_ticker_tf
 from src.signal_engine import classify_signal, extract_last_bar
 from src.scoring import score_signal
-from src.alerts import export_csv, send_ntfy, print_summary, export_dashboard_json
+from src.alerts import (
+    export_csv, send_ntfy_transitions, fetch_previous_verdicts,
+    print_summary, export_dashboard_json, _build_verdict, _filter_actionable,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -367,13 +370,28 @@ def run():
     prep_count = sum(1 for s in signals if s.get("tier") == "PREP")
     logger.info(f"Tiers: ELITE={elite_count} FIRE={fire_count} PREP={prep_count}")
 
-    # 6. Output
+    # 6. Fetch previous verdicts BEFORE exporting new data
+    previous_verdicts = fetch_previous_verdicts()
+
+    # 7. Output
     export_csv(all_ranked, OUTPUT_DIR)
     export_dashboard_json(all_ranked, len(tickers))
     print_summary(bulls, bears)
 
-    # 7. Push alerts
-    send_ntfy(bulls, bears)
+    # 8. Push transition-aware alerts
+    #    Only fires when a setup CHANGES INTO SLINGSHOT/TRIGGER/ELITE/FIRE
+    actionable_for_alert = _filter_actionable(all_ranked)
+    dashboard_signals = [
+        {
+            "ticker": s["ticker"],
+            "signal": s.get("tier", "PREP"),
+            "verdict": _build_verdict(s),
+            "direction": s["direction"],
+            "score": s["score"],
+        }
+        for s in actionable_for_alert
+    ]
+    send_ntfy_transitions(dashboard_signals, previous_verdicts)
 
     elapsed = time.time() - t_start
     logger.info(f"Total runtime: {elapsed:.1f}s")
