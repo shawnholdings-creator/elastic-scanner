@@ -31,7 +31,7 @@ import requests
 
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from config.settings import NTFY_URL, OUTPUT_DIR, TOP_N, MIN_NTFY_SCORE, DISCLAIMER
+from config.settings import NTFY_URL, OUTPUT_DIR, TOP_N, MIN_NTFY_SCORE, MIN_DASHBOARD_SCORE, DISCLAIMER
 
 logger = logging.getLogger(__name__)
 
@@ -303,6 +303,39 @@ def _filter_actionable(signals: list[dict]) -> list[dict]:
     return result
 
 
+def _filter_for_dashboard(signals: list[dict]) -> list[dict]:
+    """
+    Filter developing signals for dashboard watchlist (55-69 score range).
+    These appear in the watchlist pipeline but NOT as tradable signals.
+    Excludes tickers already captured by _filter_actionable (70+).
+    Deduped by ticker, sorted by score descending.
+    """
+    # Get tickers already in actionable to exclude
+    actionable_tickers = {
+        s.get("ticker") for s in _filter_actionable(signals)
+    }
+
+    seen_tickers = set()
+    result = []
+
+    sorted_signals = sorted(signals, key=lambda x: x.get("score", 0), reverse=True)
+
+    for s in sorted_signals:
+        score = s.get("score", 0)
+
+        # Only 55-69 range (below tradable, above noise)
+        if score < MIN_DASHBOARD_SCORE or score >= MIN_NTFY_SCORE:
+            continue
+
+        ticker = s.get("ticker")
+        if ticker in actionable_tickers or ticker in seen_tickers:
+            continue
+        seen_tickers.add(ticker)
+
+        result.append(s)
+
+    return result
+
 # ─── Console Summary ──────────────────────────────────────────────
 def print_summary(bulls: list[dict], bears: list[dict]):
     """Print a formatted summary table to stdout."""
@@ -351,9 +384,7 @@ def _score_to_grade(score: int) -> str:
         return "B"
     elif score >= 70:
         return "C"
-    elif score >= 60:
-        return "D"
-    return "F"
+    return "D"
 
 
 def _build_verdict(signal: dict) -> str:
@@ -399,8 +430,10 @@ def export_dashboard_json(signals: list[dict], tickers_scanned: int) -> bool:
         logger.warning("GIST_ID / GIST_TOKEN not set — skipping dashboard export")
         return False
 
-    # Filter to actionable signals only
-    actionable = _filter_actionable(signals)
+    # Filter: tradable signals (70+) AND developing pipeline (55-69)
+    actionable = _filter_actionable(signals)  # 70+ tradable
+    developing = _filter_for_dashboard(signals)  # 55-69 watchlist pipeline
+    all_dashboard = actionable + developing
 
     # Build payload matching dashboard schema
     payload = {
@@ -418,7 +451,7 @@ def export_dashboard_json(signals: list[dict], tickers_scanned: int) -> bool:
                 "grade": _score_to_grade(s["score"]),
                 "price": round(s.get("close", 0), 2),
             }
-            for s in actionable[:20]  # cap at 20 for payload size
+            for s in all_dashboard[:25]  # cap at 25 for payload size
         ],
     }
 
@@ -439,7 +472,7 @@ def export_dashboard_json(signals: list[dict], tickers_scanned: int) -> bool:
             timeout=15,
         )
         resp.raise_for_status()
-        logger.info(f"Dashboard Gist updated ({len(actionable)} signals)")
+        logger.info(f"Dashboard Gist updated ({len(actionable)} tradable + {len(developing)} developing)")
         return True
     except Exception as e:
         logger.error(f"Dashboard Gist update failed: {e}")

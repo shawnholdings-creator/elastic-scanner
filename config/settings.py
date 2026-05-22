@@ -64,8 +64,8 @@ P_WEAK_REGIME = -10        # weak market regime (SPY below trail)
 # ─── Tier Thresholds ──────────────────────────────────────────────
 TIER_ELITE = 90    # 90+ = ELITE
 TIER_FIRE = 80     # 80-89 = FIRE
-TIER_PREP = 60     # 60-79 = PREP (actionable, developing)
-TIER_SUPPRESS = 60 # <60 suppressed
+TIER_PREP = 70     # 70-79 = PREP
+TIER_SUPPRESS = 70 # <70 suppressed from tradable
 
 # ─── Anti-Chase ──────────────────────────────────────────────────
 # Extension beyond this = fully suppressed regardless of score
@@ -73,6 +73,7 @@ EXT_HARD_CEILING = 4.0
 
 # ─── ntfy Alert Thresholds ─────────────────────────────────────────
 MIN_NTFY_SCORE = 70     # minimum score for ntfy alert (transitions only)
+MIN_DASHBOARD_SCORE = 55  # minimum score to appear on dashboard watchlist (developing)
 
 # ─── Quality Gate ──────────────────────────────────────────────────
 MIN_PRICE = 15.0
