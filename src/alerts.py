@@ -8,7 +8,7 @@ AI Dashboard Gist feed.
 v4.1 ntfy — State-aware transition alerts (A+B only):
     Only fires when a ticker's setup CHANGES INTO:
     SLINGSHOT, TRIGGER, ELITE, or FIRE
-    AND has a conviction score >= 55 (grade A or B).
+    AND has a conviction score >= 50 (grade A or B).
 
     🚨 NEW SETUP ALERTS
     AMZN → BULLISH SLINGSHOT (A) 92
@@ -144,8 +144,8 @@ def send_ntfy_transitions(
         if current_setup not in ALERT_SETUPS:
             continue
 
-        # ── A+B GATE: Only alert for score >= 55 ──
-        if score < 55:
+        # ── A+B GATE: Only alert for score >= 50 ──
+        if score < 50:
             logger.debug(f"{ticker} setup={current_setup} score={score} — below A+B threshold, skipping ntfy")
             continue
 
@@ -278,7 +278,7 @@ def send_ntfy(bulls: list[dict], bears: list[dict]) -> bool:
 
 def _filter_actionable(signals: list[dict]) -> list[dict]:
     """
-    Filter signals to actionable ones (GOOD+ quality, score >= 55).
+    Filter signals to actionable ones (GOOD+ quality, score >= 50).
     Deduped by ticker (keep highest score), sorted by score descending.
     """
     seen_tickers = set()
@@ -287,7 +287,7 @@ def _filter_actionable(signals: list[dict]) -> list[dict]:
     sorted_signals = sorted(signals, key=lambda x: x.get("score", 0), reverse=True)
 
     for s in sorted_signals:
-        if s.get("score", 0) < 55:  # GOOD+ threshold
+        if s.get("score", 0) < 50:  # GOOD+ threshold (lowered from 55)
             continue
         if s.get("tier") == "SUPPRESS":
             continue
@@ -318,7 +318,7 @@ def _filter_for_dashboard(signals: list[dict]) -> list[dict]:
 
     for s in sorted_signals:
         score = s.get("score", 0)
-        if score < 20 or score >= 55:  # Only 20-54 range
+        if score < 20 or score >= 50:  # Only 20-49 range
             continue
 
         ticker = s.get("ticker")
@@ -370,12 +370,12 @@ def print_summary(bulls: list[dict], bears: list[dict]):
 
 # ─── Dashboard Gist Export ────────────────────────────────────────
 def _score_to_grade(score: int) -> str:
-    """Map score to quality grade (Pine line 406 parity)."""
+    """Map score to quality grade (v3.1 recalibrated)."""
     if score >= 75:
         return "A"  # ELITE
-    elif score >= 55:
+    elif score >= 50:
         return "B"  # GOOD
-    elif score >= 35:
+    elif score >= 30:
         return "C"  # EARLY
     elif score >= 20:
         return "D"  # HOT

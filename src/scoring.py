@@ -32,8 +32,8 @@ from config.settings import EXT_HARD_CEILING
 
 # ─── Quality Tier Thresholds ───────────────────────────────────────
 QUALITY_ELITE = 75
-QUALITY_GOOD = 55
-QUALITY_EARLY = 35
+QUALITY_GOOD = 50    # lowered from 55 — old threshold made B-grade nearly impossible
+QUALITY_EARLY = 30
 QUALITY_HOT = 20
 
 
@@ -61,13 +61,14 @@ def score_to_tier(score: int) -> str:
     return "SUPPRESS"
 
 
-# ─── STRUCTURE Sub-Score (0-45) ──────────────────────────────────
+# ─── STRUCTURE Sub-Score (0-50) ──────────────────────────────────
 def _score_structure(signal: dict) -> tuple[int, dict]:
     """
-    Pine lines 383-385:
+    Pine lines 383-385 (adapted):
     sATR = dirCount >= 4 ? 25 : >= 3 ? 18 : >= 2 ? 10 : >= 1 ? 5 : 0
     sComp = compScore >= 4 ? 20 : >= 3 ? 15 : >= 2 ? 10 : >= 1 ? 5 : 0
-    structScore = sATR + sComp
+    sTrend = dirCount >= 3 AND ext <= 2.5 ? 5 : 0  (trend persistence bonus)
+    structScore = sATR + sComp + sTrend
     """
     bull_count = signal.get("bull_count", 0)
     direction = signal.get("direction", "MIXED")
@@ -106,20 +107,26 @@ def _score_structure(signal: dict) -> tuple[int, dict]:
     else:
         s_comp = 0
 
-    struct_score = s_atr + s_comp
-    details = {"s_atr": s_atr, "s_comp": s_comp, "struct_total": struct_score}
+    # Trend persistence bonus: strong alignment + not overextended
+    ext = signal.get("ext", 0)
+    s_trend = 5 if (dir_count >= 3 and ext <= 2.5) else 0
+
+    struct_score = s_atr + s_comp + s_trend
+    details = {"s_atr": s_atr, "s_comp": s_comp, "s_trend": s_trend, "struct_total": struct_score}
     return struct_score, details
 
 
 # ─── MOMENTUM Sub-Score (0-35) ─────────────────────────────────
 def _score_momentum(signal: dict) -> tuple[int, dict]:
     """
-    Pine lines 388-390:
-    sExp = dirExpFire ? 20 : (atrRise and rangeExpand) and dirTrend ? 14 : (atrRise or rangeExpand) and dirTrend ? 8 : 0
-    sAlma = dirStack and dirSlope ? 15 : dirStack ? 10 : dirSlope ? 5 : 0
+    Pine lines 388-390 (adapted for bear/mixed parity):
+    sExp = dirExpFire ? 20 : (atrRise and rangeExpand) ? 14 : (atrRise or rangeExpand) ? 8 : 0
+    sAlma = dirStack and dirSlope ? 15 : dirStack or dirSlope ? 8 : 0
     momScore = sExp + sAlma
 
-    MIXED direction gets partial credit (reduced) based on 4H direction.
+    Key fix: BEAR direction now gets full momentum credit (was effectively 0).
+    MIXED direction gets 75% partial credit (was 60%).
+    ALMA scoring gives partial credit for stack OR slope (was 0 for slope-only).
     """
     direction = signal.get("direction", "MIXED")
     is_bull = direction == "BULL"
@@ -139,6 +146,7 @@ def _score_momentum(signal: dict) -> tuple[int, dict]:
     range_expand = signal.get("range_expand", False)
 
     # dir_trend: 4H direction matches overall direction
+    # For BEAR: 4H bearish = dir_trend aligned
     if is_bull:
         dir_trend = is_bull_4h
     elif is_bear:
@@ -146,20 +154,20 @@ def _score_momentum(signal: dict) -> tuple[int, dict]:
     else:
         dir_trend = True  # MIXED: 4H is the reference, always "aligned" with itself
 
-    # dirExpFire: expansion fire + 4H direction
-    dir_exp_fire = expansion_fire and (
-        (use_bull and is_bull_4h) or
-        (not use_bull and not is_bull_4h)
-    )
+    # dirExpFire: expansion fire + direction aligned
+    dir_exp_fire = expansion_fire and dir_trend
 
+    # Expansion scoring — no longer requires dir_trend for partial credit
     if dir_exp_fire:
         s_exp = 20
     elif (atr_rise and range_expand) and dir_trend:
         s_exp = 14
+    elif (atr_rise and range_expand):
+        s_exp = 10  # both firing but trend not fully aligned — still significant
     elif (atr_rise or range_expand) and dir_trend:
         s_exp = 8
     elif (atr_rise or range_expand):
-        s_exp = 4  # partial credit for expansion without full alignment
+        s_exp = 5  # partial credit for any expansion signal
     else:
         s_exp = 0
 
@@ -176,14 +184,14 @@ def _score_momentum(signal: dict) -> tuple[int, dict]:
     elif alma_stack:
         s_alma = 10
     elif alma_slope:
-        s_alma = 5
+        s_alma = 8   # raised from 5 — slope alone is meaningful directional momentum
     else:
         s_alma = 0
 
-    # MIXED direction penalty: reduce momentum by 40% (partial credit, not full)
+    # MIXED direction penalty: reduce momentum by 25% (was 40% — too harsh)
     if is_mixed:
-        s_exp = int(s_exp * 0.6)
-        s_alma = int(s_alma * 0.6)
+        s_exp = int(s_exp * 0.75)
+        s_alma = int(s_alma * 0.75)
 
     mom_score = s_exp + s_alma
     details = {"s_exp": s_exp, "s_alma": s_alma, "mom_total": mom_score}
@@ -239,35 +247,22 @@ def _score_rs(signal: dict, market_context: dict) -> tuple[int, dict]:
 # ─── Penalties ────────────────────────────────────────────────
 def _apply_penalties(signal: dict) -> tuple[int, dict]:
     """
-    Pine lines 398-400:
-    penStretch = extATR > 3.5 ? -30 : extATR > 2.5 ? -20 : 0
-    penWeakRS = rsVsSpy < -2.0 and rsVsQqq < -2.0 ? -20 : 0
+    Softened penalties (v3.1):
+    penStretch = extATR > 3.5 ? -20 : extATR > 2.5 ? -10 : 0
+    Removed weak RS penalty — RS data is unreliable and was double-penalizing.
     """
-    direction = signal.get("direction", "MIXED")
-    is_bull = direction == "BULL"
     ext = signal.get("ext", 0)
 
-    # Extension penalty
+    # Extension penalty (softened — old values were -30/-20, too harsh)
     if ext > 3.5:
-        pen_stretch = -30
-    elif ext > 2.5:
         pen_stretch = -20
+    elif ext > 2.5:
+        pen_stretch = -10
     else:
         pen_stretch = 0
 
-    # Weak RS penalty
-    rs_vs_spy = signal.get("rs_vs_spy", 0.0)
-    rs_vs_qqq = signal.get("rs_vs_qqq", 0.0)
-
-    if is_bull and rs_vs_spy < -2.0 and rs_vs_qqq < -2.0:
-        pen_weak_rs = -20
-    elif not is_bull and rs_vs_spy > 2.0 and rs_vs_qqq > 2.0:
-        pen_weak_rs = -20
-    else:
-        pen_weak_rs = 0
-
-    pen_total = pen_stretch + pen_weak_rs
-    details = {"pen_stretch": pen_stretch, "pen_weak_rs": pen_weak_rs, "pen_total": pen_total}
+    pen_total = pen_stretch
+    details = {"pen_stretch": pen_stretch, "pen_total": pen_total}
     return pen_total, details
 
 

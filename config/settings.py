@@ -58,7 +58,7 @@ TIER_SUPPRESS = 70 # <70 suppressed from tier (but quality scoring uses 20+)
 EXT_HARD_CEILING = 4.0
 
 # ─── ntfy Alert Thresholds ─────────────────────────────────────────
-MIN_NTFY_SCORE = 55     # minimum score for ntfy alert (GOOD+ transitions only)
+MIN_NTFY_SCORE = 50     # minimum score for ntfy alert (GOOD+ transitions only)
 
 # ─── Quality Gate ──────────────────────────────────────────────────
 MIN_PRICE = 15.0
