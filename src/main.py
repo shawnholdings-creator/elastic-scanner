@@ -381,80 +381,86 @@ def run():
         if ticker.startswith("^"):
             continue
 
-        ticker_data = all_data.get(ticker, {})
+        try:
+            ticker_data = all_data.get(ticker, {})
 
-        # Skip if missing required TFs (monthly is optional)
-        if not all(tf in ticker_data for tf in ["4H", "1D", "1W"]):
-            skipped_missing_tf += 1
+            # Skip if missing required TFs (monthly is optional)
+            if not all(tf in ticker_data for tf in ["4H", "1D", "1W"]):
+                skipped_missing_tf += 1
+                skipped += 1
+                continue
+
+            # Quality gate (use daily data) — with rejection tracking
+            df_1d = ticker_data["1D"]
+            if ticker not in INDEX_TICKERS and ticker not in SECTOR_ETF_TICKERS:
+                if df_1d is None or df_1d.empty:
+                    skipped_quality_nodata += 1
+                    skipped += 1
+                    continue
+                last_close = df_1d["Close"].iloc[-1]
+                avg_vol = df_1d["Volume"].tail(20).mean()
+                if last_close < MIN_PRICE or last_close > MAX_PRICE:
+                    skipped_quality_price += 1
+                    skipped += 1
+                    continue
+                if avg_vol < MIN_AVG_VOL:
+                    skipped_quality_vol += 1
+                    skipped += 1
+                    continue
+
+            # Run elastic engine on each TF
+            results = {}
+            for tf in ["4H", "1D", "1W", "1M"]:
+                if tf not in ticker_data:
+                    results[tf] = None
+                    continue
+                try:
+                    enriched = process_ticker_tf(ticker_data[tf])
+                    results[tf] = extract_last_bar(enriched)
+                except Exception:
+                    results[tf] = None
+
+            # Must have at least 4H, 1D, 1W
+            if not all(results[tf] for tf in ["4H", "1D", "1W"]):
+                skipped_engine += 1
+                skipped += 1
+                continue
+
+            # Get sector for this ticker
+            sector = sector_map.get(ticker, "")
+
+            # Build signal (no rigid gates — every valid ticker gets one)
+            signal = classify_signal(
+                ticker,
+                results["4H"],
+                results["1D"],
+                results["1W"],
+                results.get("1M"),
+                sector=sector,
+            )
+
+            if signal:
+                # Enrich with RS vs SPY/QQQ (Pine: rsVsSpy = stockChg10 - spyChg10)
+                ticker_perf = market_context.get("ticker_perf_10d", {}).get(ticker)
+                spy_perf = market_context.get("spy_perf_10d")
+                qqq_perf = market_context.get("qqq_perf_10d")
+
+                signal["rs_vs_spy"] = (ticker_perf - spy_perf) if (ticker_perf is not None and spy_perf is not None) else 0.0
+                signal["rs_vs_qqq"] = (ticker_perf - qqq_perf) if (ticker_perf is not None and qqq_perf is not None) else 0.0
+
+                # Score with market context
+                signal = score_signal(signal, market_context)
+
+                # Only keep signals above HOT threshold (score >= 20)
+                if signal["score"] >= 20:
+                    signals.append(signal)
+
+            processed += 1
+
+        except Exception as e:
+            logger.warning(f"Ticker {ticker} failed: {e}")
             skipped += 1
             continue
-
-        # Quality gate (use daily data) — with rejection tracking
-        df_1d = ticker_data["1D"]
-        if ticker not in INDEX_TICKERS and ticker not in SECTOR_ETF_TICKERS:
-            if df_1d is None or df_1d.empty:
-                skipped_quality_nodata += 1
-                skipped += 1
-                continue
-            last_close = df_1d["Close"].iloc[-1]
-            avg_vol = df_1d["Volume"].tail(20).mean()
-            if last_close < MIN_PRICE or last_close > MAX_PRICE:
-                skipped_quality_price += 1
-                skipped += 1
-                continue
-            if avg_vol < MIN_AVG_VOL:
-                skipped_quality_vol += 1
-                skipped += 1
-                continue
-
-        # Run elastic engine on each TF
-        results = {}
-        for tf in ["4H", "1D", "1W", "1M"]:
-            if tf not in ticker_data:
-                results[tf] = None
-                continue
-            try:
-                enriched = process_ticker_tf(ticker_data[tf])
-                results[tf] = extract_last_bar(enriched)
-            except Exception:
-                results[tf] = None
-
-        # Must have at least 4H, 1D, 1W
-        if not all(results[tf] for tf in ["4H", "1D", "1W"]):
-            skipped_engine += 1
-            skipped += 1
-            continue
-
-        # Get sector for this ticker
-        sector = sector_map.get(ticker, "")
-
-        # Build signal (no rigid gates — every valid ticker gets one)
-        signal = classify_signal(
-            ticker,
-            results["4H"],
-            results["1D"],
-            results["1W"],
-            results.get("1M"),
-            sector=sector,
-        )
-
-        if signal:
-            # Enrich with RS vs SPY/QQQ (Pine: rsVsSpy = stockChg10 - spyChg10)
-            ticker_perf = market_context.get("ticker_perf_10d", {}).get(ticker)
-            spy_perf = market_context.get("spy_perf_10d")
-            qqq_perf = market_context.get("qqq_perf_10d")
-
-            signal["rs_vs_spy"] = (ticker_perf - spy_perf) if (ticker_perf is not None and spy_perf is not None) else 0.0
-            signal["rs_vs_qqq"] = (ticker_perf - qqq_perf) if (ticker_perf is not None and qqq_perf is not None) else 0.0
-
-            # Score with market context
-            signal = score_signal(signal, market_context)
-
-            # Only keep signals above HOT threshold (score >= 20)
-            if signal["score"] >= 20:
-                signals.append(signal)
-
-        processed += 1
 
     logger.info(f"Processed: {processed} | Signals: {len(signals)}")
     logger.info(f"Skipped breakdown: missing_TF={skipped_missing_tf} | price_gate={skipped_quality_price} | vol_gate={skipped_quality_vol} | no_data={skipped_quality_nodata} | engine_fail={skipped_engine} | total={skipped}")
