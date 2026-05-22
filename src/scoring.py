@@ -118,21 +118,38 @@ def _score_momentum(signal: dict) -> tuple[int, dict]:
     sExp = dirExpFire ? 20 : (atrRise and rangeExpand) and dirTrend ? 14 : (atrRise or rangeExpand) and dirTrend ? 8 : 0
     sAlma = dirStack and dirSlope ? 15 : dirStack ? 10 : dirSlope ? 5 : 0
     momScore = sExp + sAlma
+
+    MIXED direction gets partial credit (reduced) based on 4H direction.
     """
     direction = signal.get("direction", "MIXED")
     is_bull = direction == "BULL"
     is_bear = direction == "BEAR"
+    is_mixed = direction == "MIXED"
+    is_bull_4h = signal.get("is_bull_4h", False)
+
+    # For MIXED: use 4H direction as the reference
+    if is_mixed:
+        use_bull = is_bull_4h
+    else:
+        use_bull = is_bull
 
     # Expansion fire (compression→expansion transition + direction aligned)
     expansion_fire = signal.get("expansion_fire", False)
     atr_rise = signal.get("atr_rise", False)
     range_expand = signal.get("range_expand", False)
-    dir_trend = signal.get("is_bull_4h", False) if is_bull else (not signal.get("is_bull_4h", True) if is_bear else False)
 
-    # dirExpFire: expansion fire + direction aligned
+    # dir_trend: 4H direction matches overall direction
+    if is_bull:
+        dir_trend = is_bull_4h
+    elif is_bear:
+        dir_trend = not is_bull_4h
+    else:
+        dir_trend = True  # MIXED: 4H is the reference, always "aligned" with itself
+
+    # dirExpFire: expansion fire + 4H direction
     dir_exp_fire = expansion_fire and (
-        (is_bull and signal.get("is_bull_4h", False)) or
-        (is_bear and not signal.get("is_bull_4h", True))
+        (use_bull and is_bull_4h) or
+        (not use_bull and not is_bull_4h)
     )
 
     if dir_exp_fire:
@@ -141,12 +158,18 @@ def _score_momentum(signal: dict) -> tuple[int, dict]:
         s_exp = 14
     elif (atr_rise or range_expand) and dir_trend:
         s_exp = 8
+    elif (atr_rise or range_expand):
+        s_exp = 4  # partial credit for expansion without full alignment
     else:
         s_exp = 0
 
-    # ALMA stack + slope
-    alma_stack = signal.get("alma_stack_bull", False) if is_bull else signal.get("alma_stack_bear", False)
-    alma_slope = signal.get("alma21_rising", False) if is_bull else signal.get("alma21_falling", False)
+    # ALMA stack + slope (use 4H direction for MIXED)
+    if use_bull:
+        alma_stack = signal.get("alma_stack_bull", False)
+        alma_slope = signal.get("alma21_rising", False)
+    else:
+        alma_stack = signal.get("alma_stack_bear", False)
+        alma_slope = signal.get("alma21_falling", False)
 
     if alma_stack and alma_slope:
         s_alma = 15
@@ -156,6 +179,11 @@ def _score_momentum(signal: dict) -> tuple[int, dict]:
         s_alma = 5
     else:
         s_alma = 0
+
+    # MIXED direction penalty: reduce momentum by 40% (partial credit, not full)
+    if is_mixed:
+        s_exp = int(s_exp * 0.6)
+        s_alma = int(s_alma * 0.6)
 
     mom_score = s_exp + s_alma
     details = {"s_exp": s_exp, "s_alma": s_alma, "mom_total": mom_score}
