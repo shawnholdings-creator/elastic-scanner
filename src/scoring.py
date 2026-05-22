@@ -281,17 +281,27 @@ def _detect_setup(signal: dict) -> str:
     if not is_bull and fresh_flip and was_coiled and (4 - bull_count) >= 3 and expansion_fire:
         return "SLINGSHOT"
 
-    # FIRE: triple aligned + expansion/slingshot + near trail
-    if triple_bull and (expansion_fire) and ext <= 2.0:
+    # FIRE: triple aligned + (expansion OR tight to trail) + manageable extension
+    #   - Classic: expansion_fire + ext <= 2.0
+    #   - Trend fire: 3+ aligned + ext <= 1.5 (strong trend near trail, no expansion needed)
+    if triple_bull and expansion_fire and ext <= 2.0:
         return "FIRE"
-    if triple_bear and (expansion_fire) and ext <= 2.0:
+    if triple_bear and expansion_fire and ext <= 2.0:
+        return "FIRE"
+    if triple_bull and ext <= 1.5 and not is_stretched:
+        return "FIRE"
+    if triple_bear and ext <= 1.5 and not is_stretched:
         return "FIRE"
 
-    # TRIGGER: 3+ TFs aligned, not stretched, reasonable extension
-    if bull_count >= 3 and not is_stretched and ext <= 2.5 and is_bull:
-        return "TRIGGER"
-    if (4 - bull_count) >= 3 and not is_stretched and ext <= 2.5 and not is_bull:
-        return "TRIGGER"
+    # TRIGGER: 3+ TFs aligned, reasonable extension
+    #   - Clean: not stretched + ext <= 2.5
+    #   - Mild stretch OK if ext <= 2.0 (BB expanding but price still near trail)
+    if bull_count >= 3 and ext <= 2.5 and is_bull:
+        if not is_stretched or ext <= 2.0:
+            return "TRIGGER"
+    if (4 - bull_count) >= 3 and ext <= 2.5 and not is_bull:
+        if not is_stretched or ext <= 2.0:
+            return "TRIGGER"
 
     # COIL: bull 4H + pulling back to ALMA21 + above trail (reloading zone)
     is_bull_4h = signal.get("is_bull_4h", False)
@@ -299,8 +309,8 @@ def _detect_setup(signal: dict) -> str:
         if close <= alma21 and close > trail:
             return "COIL"
 
-    # ACTIVE: bull but extended
-    if is_bull_4h and (ext > 2.5 or is_stretched):
+    # ACTIVE: bull but truly extended (ext > 3.0 or heavily stretched)
+    if is_bull_4h and ext > 3.0:
         return "ACTIVE"
 
     return "WATCH"
