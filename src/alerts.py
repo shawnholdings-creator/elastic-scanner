@@ -5,13 +5,14 @@ Handles all output: writing scan results to CSV, pushing
 actionable signals to mobile via ntfy, and updating the
 AI Dashboard Gist feed.
 
-v4.0 ntfy — State-aware transition alerts:
+v4.1 ntfy — State-aware transition alerts (A+B only):
     Only fires when a ticker's setup CHANGES INTO:
-    SLINGSHOT, TRIGGER, ELITE, or FIRE.
+    SLINGSHOT, TRIGGER, ELITE, or FIRE
+    AND has a conviction score >= 55 (grade A or B).
 
     🚨 NEW SETUP ALERTS
     AMZN → BULLISH SLINGSHOT (A) 92
-    NVDA → BULLISH FIRE (B) 86
+    NVDA → BULLISH FIRE (B) 68
 
     EDUCATIONAL ANALYSIS ONLY. NOT FINANCIAL ADVICE.
     NOT A RECOMMENDATION TO BUY, SELL, OR HOLD.
@@ -135,11 +136,17 @@ def send_ntfy_transitions(
 
     for s in current_signals:
         ticker = s.get("ticker", "")
+        score = s.get("score", 0)
         verdict = s.get("verdict", s.get("signal", ""))
         current_setup = _extract_setup_type(verdict)
 
         # Only care about transitions INTO alert-worthy setups
         if current_setup not in ALERT_SETUPS:
+            continue
+
+        # ── A+B GATE: Only alert for score >= 55 ──
+        if score < 55:
+            logger.debug(f"{ticker} setup={current_setup} score={score} — below A+B threshold, skipping ntfy")
             continue
 
         # Check what the ticker was BEFORE
@@ -151,7 +158,7 @@ def send_ntfy_transitions(
             transitions.append(s)
 
     if not transitions:
-        logger.info("No setup transitions detected — skipping ntfy")
+        logger.info("No A+B setup transitions detected — skipping ntfy")
         return False
 
     # Build message
