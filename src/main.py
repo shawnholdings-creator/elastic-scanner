@@ -166,14 +166,20 @@ def load_universe() -> tuple[list[str], dict[str, str]]:
 
 
 # ─── Data Download ─────────────────────────────────────────────────
+BATCH_SIZE = 200  # yfinance struggles with >500 tickers in one call
+
 def download_data(tickers: list[str]) -> dict[str, dict[str, pd.DataFrame]]:
     """
     Bulk download OHLCV data for all tickers across all timeframes.
     Returns: {ticker: {"4H": df, "1D": df, "1W": df}}
 
-    Uses yfinance bulk download (1 HTTP call per TF) for speed.
+    Downloads in batches of BATCH_SIZE to avoid yfinance timeouts.
     """
     data = {}
+
+    # Split tickers into batches
+    batches = [tickers[i:i + BATCH_SIZE] for i in range(0, len(tickers), BATCH_SIZE)]
+    logger.info(f"Download plan: {len(tickers)} tickers in {len(batches)} batches of ~{BATCH_SIZE}")
 
     for tf_name, tf_cfg in TIMEFRAMES.items():
         interval = tf_cfg["interval"]
@@ -182,49 +188,52 @@ def download_data(tickers: list[str]) -> dict[str, dict[str, pd.DataFrame]]:
 
         logger.info(f"Downloading {tf_name} data (interval={interval}, period={period})...")
         t0 = time.time()
+        tf_success = 0
 
-        try:
-            raw = yf.download(
-                tickers,
-                period=period,
-                interval=interval,
-                group_by="ticker",
-                auto_adjust=True,
-                threads=True,
-                progress=False,
-            )
-        except Exception as e:
-            logger.error(f"Failed to download {tf_name}: {e}")
-            continue
-
-        elapsed = time.time() - t0
-        logger.info(f"  → Downloaded in {elapsed:.1f}s")
-
-        # Parse per-ticker DataFrames
-        for ticker in tickers:
-            if ticker not in data:
-                data[ticker] = {}
-
+        for batch_idx, batch in enumerate(batches):
             try:
-                if isinstance(raw.columns, pd.MultiIndex):
-                    # Multi-ticker download: columns are (ticker, OHLCV)
-                    df = raw[ticker].dropna(how="all").copy()
-                else:
-                    # Single ticker fallback
-                    df = raw.dropna(how="all").copy()
+                raw = yf.download(
+                    batch,
+                    period=period,
+                    interval=interval,
+                    group_by="ticker",
+                    auto_adjust=True,
+                    threads=True,
+                    progress=False,
+                )
+            except Exception as e:
+                logger.warning(f"  Batch {batch_idx+1}/{len(batches)} failed for {tf_name}: {e}")
+                continue
 
-                if df.empty:
+            # Parse per-ticker DataFrames from this batch
+            for ticker in batch:
+                if ticker not in data:
+                    data[ticker] = {}
+
+                try:
+                    if len(batch) == 1:
+                        df = raw.dropna(how="all").copy()
+                    elif isinstance(raw.columns, pd.MultiIndex):
+                        df = raw[ticker].dropna(how="all").copy()
+                    else:
+                        df = raw.dropna(how="all").copy()
+
+                    if df.empty:
+                        continue
+
+                    # Resample 1h → 4h if needed
+                    if resample_to:
+                        df = _resample_ohlcv(df, resample_to)
+
+                    if len(df) >= 40:  # need enough bars for ATR warmup
+                        data[ticker][tf_name] = df
+                        tf_success += 1
+
+                except Exception:
                     continue
 
-                # Resample 1h → 4h if needed
-                if resample_to:
-                    df = _resample_ohlcv(df, resample_to)
-
-                if len(df) >= 40:  # need enough bars for ATR warmup
-                    data[ticker][tf_name] = df
-
-            except Exception:
-                continue
+        elapsed = time.time() - t0
+        logger.info(f"  → {tf_name}: {tf_success} tickers loaded in {elapsed:.1f}s")
 
     return data
 
