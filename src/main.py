@@ -360,6 +360,11 @@ def run():
     # 4. Process each ticker
     signals = []
     skipped = 0
+    skipped_missing_tf = 0
+    skipped_quality_price = 0
+    skipped_quality_vol = 0
+    skipped_quality_nodata = 0
+    skipped_engine = 0
     processed = 0
 
     for ticker in tickers:
@@ -371,13 +376,27 @@ def run():
 
         # Skip if missing required TFs (monthly is optional)
         if not all(tf in ticker_data for tf in ["4H", "1D", "1W"]):
+            skipped_missing_tf += 1
             skipped += 1
             continue
 
-        # Quality gate (use daily data)
-        if not passes_quality(ticker, ticker_data["1D"]):
-            skipped += 1
-            continue
+        # Quality gate (use daily data) — with rejection tracking
+        df_1d = ticker_data["1D"]
+        if ticker not in INDEX_TICKERS and ticker not in SECTOR_ETF_TICKERS:
+            if df_1d is None or df_1d.empty:
+                skipped_quality_nodata += 1
+                skipped += 1
+                continue
+            last_close = df_1d["Close"].iloc[-1]
+            avg_vol = df_1d["Volume"].tail(20).mean()
+            if last_close < MIN_PRICE or last_close > MAX_PRICE:
+                skipped_quality_price += 1
+                skipped += 1
+                continue
+            if avg_vol < MIN_AVG_VOL:
+                skipped_quality_vol += 1
+                skipped += 1
+                continue
 
         # Run elastic engine on each TF
         results = {}
@@ -393,6 +412,7 @@ def run():
 
         # Must have at least 4H, 1D, 1W
         if not all(results[tf] for tf in ["4H", "1D", "1W"]):
+            skipped_engine += 1
             skipped += 1
             continue
 
@@ -427,7 +447,8 @@ def run():
 
         processed += 1
 
-    logger.info(f"Processed: {processed} | Skipped: {skipped} | Signals: {len(signals)}")
+    logger.info(f"Processed: {processed} | Signals: {len(signals)}")
+    logger.info(f"Skipped breakdown: missing_TF={skipped_missing_tf} | price_gate={skipped_quality_price} | vol_gate={skipped_quality_vol} | no_data={skipped_quality_nodata} | engine_fail={skipped_engine} | total={skipped}")
 
     # 5. Rank by score (pure score ranking)
     all_ranked = sorted(signals, key=lambda x: x["score"], reverse=True)

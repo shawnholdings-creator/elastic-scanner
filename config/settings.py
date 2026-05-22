@@ -62,8 +62,8 @@ MIN_NTFY_SCORE = 55     # minimum score for ntfy alert (GOOD+ transitions only)
 
 # ─── Quality Gate ──────────────────────────────────────────────────
 MIN_PRICE = 15.0
-MAX_PRICE = 500.0
-MIN_AVG_VOL = 300_000
+MAX_PRICE = 9999.0       # effectively no ceiling — scan the full universe
+MIN_AVG_VOL = 100_000    # lowered from 300K to include SmallCap names
 
 # ─── Universe ──────────────────────────────────────────────────────
 SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
