@@ -72,11 +72,17 @@ def classify_signal(ticker: str, data_4h: dict, data_1d: dict,
     is_stretched = data_4h.get("is_stretched", False)
     close = data_4h.get("close", 0)
     trail = data_4h.get("trail", 0)
+    tension = data_4h.get("tension", 1.0)
+    open_air = data_4h.get("open_air", False)
+
     # ALMA stack + slope (Dashboard v3.0 scoring)
+    alma8 = data_4h.get("alma8", 0)
     alma13 = data_4h.get("alma13", 0)
+    alma21 = data_4h.get("alma21", 0)
+    alma34 = data_4h.get("alma34", 0)
     alma_stack_bull = alma8 > alma13 and alma13 > alma21 and alma21 > alma34 if all([alma8, alma13, alma21, alma34]) else False
     alma_stack_bear = alma8 < alma13 and alma13 < alma21 and alma21 < alma34 if all([alma8, alma13, alma21, alma34]) else False
-    alma21_val = data_4h.get("alma21", 0)
+    alma21_val = alma21
     alma21_prev = data_4h.get("alma21_prev3", alma21_val)  # alma21[3] for slope
     alma21_rising = alma21_val > alma21_prev if alma21_val and alma21_prev else False
     alma21_falling = alma21_val < alma21_prev if alma21_val and alma21_prev else False
