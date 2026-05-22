@@ -26,9 +26,10 @@ import yfinance as yf
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config.settings import (
-    SP500_URL, NDX100_URL, FALLBACK_TICKERS, INDEX_TICKERS, TIMEFRAMES,
+    SP500_URL, NDX100_URL, RUSSELL1000_URL, SP400_URL, SP600_URL,
+    FALLBACK_TICKERS, INDEX_TICKERS, TIMEFRAMES,
     MIN_PRICE, MAX_PRICE, MIN_AVG_VOL, TOP_N, OUTPUT_DIR,
-    SECTOR_ETF_TICKERS, SECTOR_ETFS, TIER_PREP,
+    SECTOR_ETF_TICKERS, SECTOR_ETFS,
 )
 from src.elastic_engine import process_ticker_tf
 from src.signal_engine import classify_signal, extract_last_bar
@@ -58,12 +59,14 @@ def _fetch_html_tables(url: str) -> list[pd.DataFrame]:
 
 def load_universe() -> tuple[list[str], dict[str, str]]:
     """
-    Load SP500 + NDX100 tickers from Wikipedia, deduped.
+    Load universe from multiple indices: S&P 500, Nasdaq 100, Russell 1000,
+    S&P 400 MidCap, S&P 600 SmallCap. Deduped.
     Returns (tickers, sector_map) where sector_map = {ticker: sector_name}.
     """
     tickers = set()
     sector_map = {}
 
+    # ─── S&P 500 ───────────────────────────────────────────────────
     try:
         logger.info("Loading S&P 500 tickers...")
         sp500 = _fetch_html_tables(SP500_URL)[0]
@@ -79,10 +82,10 @@ def load_universe() -> tuple[list[str], dict[str, str]]:
     except Exception as e:
         logger.warning(f"Failed to load S&P 500: {e}")
 
+    # ─── Nasdaq 100 ───────────────────────────────────────────────
     try:
         logger.info("Loading Nasdaq 100 tickers...")
         ndx_tables = _fetch_html_tables(NDX100_URL)
-        # Find the table with a 'Ticker' column
         for tbl in ndx_tables:
             if "Ticker" in tbl.columns:
                 ndx_tickers = tbl["Ticker"].str.replace(".", "-", regex=False).tolist()
@@ -91,6 +94,62 @@ def load_universe() -> tuple[list[str], dict[str, str]]:
                 break
     except Exception as e:
         logger.warning(f"Failed to load Nasdaq 100: {e}")
+
+    # ─── Russell 1000 ─────────────────────────────────────────────
+    try:
+        logger.info("Loading Russell 1000 tickers...")
+        r1k_tables = _fetch_html_tables(RUSSELL1000_URL)
+        for tbl in r1k_tables:
+            # Russell 1000 Wikipedia table uses "Ticker" or "Company"
+            ticker_col = None
+            for col in ["Ticker", "Symbol", "Ticker symbol"]:
+                if col in tbl.columns:
+                    ticker_col = col
+                    break
+            if ticker_col:
+                r1k_tickers = tbl[ticker_col].dropna().str.replace(".", "-", regex=False).tolist()
+                before = len(tickers)
+                tickers.update(r1k_tickers)
+                logger.info(f"  -> {len(r1k_tickers)} Russell 1000 tickers (+{len(tickers) - before} new)")
+                break
+    except Exception as e:
+        logger.warning(f"Failed to load Russell 1000: {e}")
+
+    # ─── S&P 400 MidCap ──────────────────────────────────────────
+    try:
+        logger.info("Loading S&P 400 MidCap tickers...")
+        sp400 = _fetch_html_tables(SP400_URL)[0]
+        col = "Symbol" if "Symbol" in sp400.columns else sp400.columns[0]
+        sp400_tickers = sp400[col].str.replace(".", "-", regex=False).tolist()
+        before = len(tickers)
+        tickers.update(sp400_tickers)
+        logger.info(f"  -> {len(sp400_tickers)} S&P 400 tickers (+{len(tickers) - before} new)")
+
+        if "GICS Sector" in sp400.columns:
+            for _, row in sp400.iterrows():
+                t = str(row[col]).replace(".", "-")
+                if t not in sector_map:
+                    sector_map[t] = row["GICS Sector"]
+    except Exception as e:
+        logger.warning(f"Failed to load S&P 400: {e}")
+
+    # ─── S&P 600 SmallCap ────────────────────────────────────────
+    try:
+        logger.info("Loading S&P 600 SmallCap tickers...")
+        sp600 = _fetch_html_tables(SP600_URL)[0]
+        col = "Symbol" if "Symbol" in sp600.columns else sp600.columns[0]
+        sp600_tickers = sp600[col].str.replace(".", "-", regex=False).tolist()
+        before = len(tickers)
+        tickers.update(sp600_tickers)
+        logger.info(f"  -> {len(sp600_tickers)} S&P 600 tickers (+{len(tickers) - before} new)")
+
+        if "GICS Sector" in sp600.columns:
+            for _, row in sp600.iterrows():
+                t = str(row[col]).replace(".", "-")
+                if t not in sector_map:
+                    sector_map[t] = row["GICS Sector"]
+    except Exception as e:
+        logger.warning(f"Failed to load S&P 600: {e}")
 
     if not tickers:
         logger.warning("Using fallback ticker list")
@@ -213,8 +272,9 @@ def build_market_context(all_data: dict, tickers: list[str]) -> dict:
     context = {
         "spy_below_trail": False,
         "sector_bull": {},
-        "spy_perf_5d": None,
-        "ticker_perf_5d": {},
+        "spy_perf_10d": None,
+        "qqq_perf_10d": None,
+        "ticker_perf_10d": {},
         "earnings_days": {},  # placeholder — no API for earnings yet
     }
 
@@ -227,12 +287,24 @@ def build_market_context(all_data: dict, tickers: list[str]) -> dict:
             if spy_last:
                 context["spy_below_trail"] = not spy_last["is_bull"]
 
-                # SPY 5-day performance
+                # SPY 10-day performance (Pine uses 10-day)
                 spy_close = spy_data["1D"]["Close"]
-                if len(spy_close) >= 6:
-                    context["spy_perf_5d"] = float(
-                        (spy_close.iloc[-1] / spy_close.iloc[-6] - 1) * 100
+                if len(spy_close) >= 11:
+                    context["spy_perf_10d"] = float(
+                        (spy_close.iloc[-1] / spy_close.iloc[-11] - 1) * 100
                     )
+        except Exception:
+            pass
+
+    # QQQ 10-day performance
+    qqq_data = all_data.get("QQQ", {})
+    if "1D" in qqq_data:
+        try:
+            qqq_close = qqq_data["1D"]["Close"]
+            if len(qqq_close) >= 11:
+                context["qqq_perf_10d"] = float(
+                    (qqq_close.iloc[-1] / qqq_close.iloc[-11] - 1) * 100
+                )
         except Exception:
             pass
 
@@ -248,15 +320,15 @@ def build_market_context(all_data: dict, tickers: list[str]) -> dict:
             except Exception:
                 pass
 
-    # Ticker 5-day performance (for relative strength)
+    # Ticker 10-day performance (for relative strength vs SPY/QQQ)
     for ticker in tickers:
         ticker_data = all_data.get(ticker, {})
         if "1D" in ticker_data:
             try:
                 close = ticker_data["1D"]["Close"]
-                if len(close) >= 6:
-                    context["ticker_perf_5d"][ticker] = float(
-                        (close.iloc[-1] / close.iloc[-6] - 1) * 100
+                if len(close) >= 11:
+                    context["ticker_perf_10d"][ticker] = float(
+                        (close.iloc[-1] / close.iloc[-11] - 1) * 100
                     )
             except Exception:
                 pass
@@ -338,11 +410,19 @@ def run():
         )
 
         if signal:
+            # Enrich with RS vs SPY/QQQ (Pine: rsVsSpy = stockChg10 - spyChg10)
+            ticker_perf = market_context.get("ticker_perf_10d", {}).get(ticker)
+            spy_perf = market_context.get("spy_perf_10d")
+            qqq_perf = market_context.get("qqq_perf_10d")
+
+            signal["rs_vs_spy"] = (ticker_perf - spy_perf) if (ticker_perf is not None and spy_perf is not None) else 0.0
+            signal["rs_vs_qqq"] = (ticker_perf - qqq_perf) if (ticker_perf is not None and qqq_perf is not None) else 0.0
+
             # Score with market context
             signal = score_signal(signal, market_context)
 
-            # Only keep signals above suppress threshold
-            if signal["score"] >= TIER_PREP:
+            # Only keep signals above HOT threshold (score >= 20)
+            if signal["score"] >= 20:
                 signals.append(signal)
 
         processed += 1

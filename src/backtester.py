@@ -43,8 +43,8 @@ logger = logging.getLogger(__name__)
 
 DISCLAIMER = "EDUCATIONAL ANALYSIS ONLY. NOT FINANCIAL ADVICE. NOT A RECOMMENDATION TO BUY, SELL, OR HOLD."
 
-# Actionable signal types (skip EXTENDED)
-ACTIONABLE = {"ELITE", "IDEAL", "SLINGSHOT", "PRIME", "FIRE", "PREP"}
+# All tiers except SUPPRESS are actionable for backtest (SUPPRESS = score < 70)
+ACTIONABLE = {"ELITE", "FIRE", "PREP", "SUPPRESS"}
 
 # Max holding period (bars) before forced exit
 MAX_HOLD = 40
@@ -157,9 +157,8 @@ def backtest_ticker(ticker: str, df_1d: pd.DataFrame,
 
         signal = score_signal(signal)
 
-        # Only trade actionable signals
-        if signal["signal"] not in ACTIONABLE:
-            continue
+        # Trade all scored signals for backtest analysis
+        # (scoring engine already filters weak signals to low scores)
 
         # ─── Open trade at next bar's open ────────────────────────
         entry_price = float(next_bar["Open"])
@@ -176,7 +175,7 @@ def backtest_ticker(ticker: str, df_1d: pd.DataFrame,
 
         open_trade = Trade(
             ticker=ticker,
-            signal=signal["signal"],
+            signal=signal["tier"],
             direction=signal["direction"],
             score=signal["score"],
             entry_bar=i + 1,

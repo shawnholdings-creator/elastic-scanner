@@ -31,7 +31,7 @@ import requests
 
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from config.settings import NTFY_URL, OUTPUT_DIR, TOP_N, MIN_NTFY_SCORE, MIN_DASHBOARD_SCORE, DISCLAIMER
+from config.settings import NTFY_URL, OUTPUT_DIR, TOP_N, DISCLAIMER
 
 logger = logging.getLogger(__name__)
 
@@ -271,33 +271,24 @@ def send_ntfy(bulls: list[dict], bears: list[dict]) -> bool:
 
 def _filter_actionable(signals: list[dict]) -> list[dict]:
     """
-    Filter signals to only actionable ones:
-    - Score >= MIN_NTFY_SCORE (70)
-    - Tier is ELITE, FIRE, or PREP (not SUPPRESS)
-    - Deduplicated by ticker (keep highest score)
-    - Sorted by score descending
+    Filter signals to actionable ones (GOOD+ quality, score >= 55).
+    Deduped by ticker (keep highest score), sorted by score descending.
     """
     seen_tickers = set()
     result = []
 
-    # Sort by score first so dedup keeps the highest
     sorted_signals = sorted(signals, key=lambda x: x.get("score", 0), reverse=True)
 
     for s in sorted_signals:
-        # Skip below threshold
-        if s.get("score", 0) < MIN_NTFY_SCORE:
+        if s.get("score", 0) < 55:  # GOOD+ threshold
             continue
-
-        # Skip suppressed tier
         if s.get("tier") == "SUPPRESS":
             continue
 
-        # Skip duplicate tickers
         ticker = s.get("ticker")
         if ticker in seen_tickers:
             continue
         seen_tickers.add(ticker)
-
         result.append(s)
 
     return result
@@ -305,12 +296,10 @@ def _filter_actionable(signals: list[dict]) -> list[dict]:
 
 def _filter_for_dashboard(signals: list[dict]) -> list[dict]:
     """
-    Filter developing signals for dashboard watchlist (55-69 score range).
-    These appear in the watchlist pipeline but NOT as tradable signals.
-    Excludes tickers already captured by _filter_actionable (70+).
-    Deduped by ticker, sorted by score descending.
+    Filter developing signals for dashboard watchlist (20-54 score range).
+    These are HOT/EARLY quality — appear in watchlist but NOT tradable.
+    Excludes tickers already in actionable (55+).
     """
-    # Get tickers already in actionable to exclude
     actionable_tickers = {
         s.get("ticker") for s in _filter_actionable(signals)
     }
@@ -322,16 +311,13 @@ def _filter_for_dashboard(signals: list[dict]) -> list[dict]:
 
     for s in sorted_signals:
         score = s.get("score", 0)
-
-        # Only 55-69 range (below tradable, above noise)
-        if score < MIN_DASHBOARD_SCORE or score >= MIN_NTFY_SCORE:
+        if score < 20 or score >= 55:  # Only 20-54 range
             continue
 
         ticker = s.get("ticker")
         if ticker in actionable_tickers or ticker in seen_tickers:
             continue
         seen_tickers.add(ticker)
-
         result.append(s)
 
     return result
@@ -377,43 +363,38 @@ def print_summary(bulls: list[dict], bears: list[dict]):
 
 # ─── Dashboard Gist Export ────────────────────────────────────────
 def _score_to_grade(score: int) -> str:
-    """Convert numeric score to letter grade."""
-    if score >= 90:
-        return "A"
-    elif score >= 80:
-        return "B"
-    elif score >= 70:
-        return "C"
-    return "D"
+    """Map score to quality grade (Pine line 406 parity)."""
+    if score >= 75:
+        return "A"  # ELITE
+    elif score >= 55:
+        return "B"  # GOOD
+    elif score >= 35:
+        return "C"  # EARLY
+    elif score >= 20:
+        return "D"  # HOT
+    return "F"  # POOR
 
 
 def _build_verdict(signal: dict) -> str:
     """
-    Build a descriptive verdict label for the dashboard.
-    Combines direction + compression state + tier for human-readable labels.
-    Examples: "BULLISH SLINGSHOT", "BEARISH FIRE", "COIL", "READY"
+    Build verdict from the setup field computed by scoring.py.
+    Maps to Pine masterState (no-position mode, lines 508-524).
     """
+    setup = signal.get("setup", "WATCH")
     direction = signal.get("direction", "BULL")
-    tier = signal.get("tier", "PREP")
-    is_compressed = signal.get("is_compressed", False)
-    flip_age = signal.get("flip_age", 999)
-    expansion_fire = signal.get("expansion_fire", False)
-
     prefix = "BULLISH" if direction == "BULL" else "BEARISH"
 
-    # Compression-based verdicts
-    if is_compressed and flip_age <= 2 and expansion_fire:
+    if setup == "SLINGSHOT":
         return f"{prefix} SLINGSHOT"
-    elif is_compressed:
-        return "COIL"
-    elif flip_age <= 2:
-        return f"{prefix} TRIGGER"
-    elif tier == "ELITE":
-        return f"{prefix} ELITE"
-    elif tier == "FIRE":
+    elif setup == "FIRE":
         return f"{prefix} FIRE"
-    else:
-        return "READY"
+    elif setup == "TRIGGER":
+        return f"{prefix} TRIGGER"
+    elif setup == "COIL":
+        return "COIL"
+    elif setup == "ACTIVE":
+        return f"{prefix} ACTIVE"
+    return "WATCH"
 
 
 def export_dashboard_json(signals: list[dict], tickers_scanned: int) -> bool:
@@ -443,15 +424,19 @@ def export_dashboard_json(signals: list[dict], tickers_scanned: int) -> bool:
         "signals": [
             {
                 "ticker": s["ticker"],
-                "signal": s.get("tier", "PREP"),
+                "signal": s.get("setup", "WATCH"),
                 "verdict": _build_verdict(s),
                 "direction": s["direction"],
                 "score": s["score"],
                 "ext": round(s.get("ext", 0), 1),
                 "grade": _score_to_grade(s["score"]),
+                "quality": s.get("quality", "POOR"),
                 "price": round(s.get("close", 0), 2),
+                "struct": s.get("struct_score", 0),
+                "momt": s.get("mom_score", 0),
+                "rs": s.get("rs_score", 0),
             }
-            for s in all_dashboard[:25]  # cap at 25 for payload size
+            for s in all_dashboard[:30]  # cap at 30 for payload size
         ],
     }
 

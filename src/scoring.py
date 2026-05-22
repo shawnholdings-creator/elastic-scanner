@@ -1,213 +1,355 @@
 """
-Scoring Engine — Weighted Score (v3.0)
+Scoring Engine — Elastic Dashboard v3.0 Parity
 
-Pure additive scoring with partial confluence. No rigid all-pass filters.
-Every ticker gets a score. Tiers are assigned by score alone.
+Direct port of the PineScript scoring engine from Elastic_Dashboard_v3.0.pine.
+Uses 3-pillar granular scoring with partial credit:
 
-BASE FACTORS:
-  +25  MTF aligned (all 3+ TFs agree)
-  +20  Recent compression present
-  +20  Fresh 4H flip / trigger
-  +10  ALMA momentum confirms direction
-  +10  RVOL (relative volume surge)
-  +10  Sector strength (sector ETF aligned)
-  +10  Relative strength (stock vs SPY)
+  STRUCTURE (0-45): MTF alignment (graduated) + compression score (graduated)
+  MOMENTUM  (0-35): Expansion fire + ALMA stack/slope
+  RS        (0-20): RVOL ratio + relative strength vs SPY/QQQ
 
-PENALTIES:
-  -20  extATR > 2.5
-  -40  extATR > 3.5 (replaces -20)
-  -25  Earnings within 7 days
-  -15  Weak market regime (SPY below trail)
+  PENALTIES:
+    extATR > 3.5 → -30
+    extATR > 2.5 → -20
+    Weak RS (underperforming both SPY & QQQ by > 2%) → -20
 
-TIERS:
-  90+  ELITE
-  80-89 FIRE
-  70-79 PREP
-  <70  suppress
+  TOTAL = clamp(struct + momt + rs + penalties, 0, 100)
 
-Anti-chase: extATR > 4.0 → hard suppress regardless of score.
+  QUALITY TIERS:
+    75+ = ELITE
+    55+ = GOOD
+    35+ = EARLY
+    20+ = HOT
+    <20 = POOR
+
+Anti-chase: extATR > 4.0 → hard suppress.
 """
 
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from config.settings import (
-    W_MTF_ALIGNED, W_COMPRESSION, W_FRESH_FLIP,
-    W_ALMA_MOMENTUM, W_RVOL, W_SECTOR_STRENGTH, W_RELATIVE_STRENGTH,
-    P_MID_EXT, P_HIGH_EXT, P_EARNINGS_NEAR, P_WEAK_REGIME,
-    TIER_ELITE, TIER_FIRE, TIER_PREP,
-    FRESH_FLIP_BARS, COMP_FIRE_MIN, VOL_SURGE_MULT,
-    EXT_HARD_CEILING,
-)
+from config.settings import EXT_HARD_CEILING
+
+
+# ─── Quality Tier Thresholds ───────────────────────────────────────
+QUALITY_ELITE = 75
+QUALITY_GOOD = 55
+QUALITY_EARLY = 35
+QUALITY_HOT = 20
+
+
+def score_to_quality(score: int) -> str:
+    """Convert numeric score to quality label (Pine line 406)."""
+    if score >= QUALITY_ELITE:
+        return "ELITE"
+    elif score >= QUALITY_GOOD:
+        return "GOOD"
+    elif score >= QUALITY_EARLY:
+        return "EARLY"
+    elif score >= QUALITY_HOT:
+        return "HOT"
+    return "POOR"
 
 
 def score_to_tier(score: int) -> str:
-    """Convert numeric score to tier label."""
-    if score >= TIER_ELITE:
+    """Legacy tier for backward compat — maps to setup type."""
+    if score >= 90:
         return "ELITE"
-    elif score >= TIER_FIRE:
+    elif score >= 80:
         return "FIRE"
-    elif score >= TIER_PREP:
+    elif score >= 70:
         return "PREP"
     return "SUPPRESS"
 
 
+# ─── STRUCTURE Sub-Score (0-45) ──────────────────────────────────
+def _score_structure(signal: dict) -> tuple[int, dict]:
+    """
+    Pine lines 383-385:
+    sATR = dirCount >= 4 ? 25 : >= 3 ? 18 : >= 2 ? 10 : >= 1 ? 5 : 0
+    sComp = compScore >= 4 ? 20 : >= 3 ? 15 : >= 2 ? 10 : >= 1 ? 5 : 0
+    structScore = sATR + sComp
+    """
+    bull_count = signal.get("bull_count", 0)
+    direction = signal.get("direction", "MIXED")
+
+    # dirCount: for bulls = bullCount, for bears = 4 - bullCount
+    if direction == "BULL":
+        dir_count = bull_count
+    elif direction == "BEAR":
+        dir_count = 4 - bull_count
+    else:
+        # MIXED: use raw bullCount if > 2, else bearCount
+        dir_count = max(bull_count, 4 - bull_count)
+
+    # ATR trail alignment (graduated)
+    if dir_count >= 4:
+        s_atr = 25
+    elif dir_count >= 3:
+        s_atr = 18
+    elif dir_count >= 2:
+        s_atr = 10
+    elif dir_count >= 1:
+        s_atr = 5
+    else:
+        s_atr = 0
+
+    # Compression score (graduated)
+    comp = signal.get("comp_score", 0)
+    if comp >= 4:
+        s_comp = 20
+    elif comp >= 3:
+        s_comp = 15
+    elif comp >= 2:
+        s_comp = 10
+    elif comp >= 1:
+        s_comp = 5
+    else:
+        s_comp = 0
+
+    struct_score = s_atr + s_comp
+    details = {"s_atr": s_atr, "s_comp": s_comp, "struct_total": struct_score}
+    return struct_score, details
+
+
+# ─── MOMENTUM Sub-Score (0-35) ─────────────────────────────────
+def _score_momentum(signal: dict) -> tuple[int, dict]:
+    """
+    Pine lines 388-390:
+    sExp = dirExpFire ? 20 : (atrRise and rangeExpand) and dirTrend ? 14 : (atrRise or rangeExpand) and dirTrend ? 8 : 0
+    sAlma = dirStack and dirSlope ? 15 : dirStack ? 10 : dirSlope ? 5 : 0
+    momScore = sExp + sAlma
+    """
+    direction = signal.get("direction", "MIXED")
+    is_bull = direction == "BULL"
+    is_bear = direction == "BEAR"
+
+    # Expansion fire (compression→expansion transition + direction aligned)
+    expansion_fire = signal.get("expansion_fire", False)
+    atr_rise = signal.get("atr_rise", False)
+    range_expand = signal.get("range_expand", False)
+    dir_trend = signal.get("is_bull_4h", False) if is_bull else (not signal.get("is_bull_4h", True) if is_bear else False)
+
+    # dirExpFire: expansion fire + direction aligned
+    dir_exp_fire = expansion_fire and (
+        (is_bull and signal.get("is_bull_4h", False)) or
+        (is_bear and not signal.get("is_bull_4h", True))
+    )
+
+    if dir_exp_fire:
+        s_exp = 20
+    elif (atr_rise and range_expand) and dir_trend:
+        s_exp = 14
+    elif (atr_rise or range_expand) and dir_trend:
+        s_exp = 8
+    else:
+        s_exp = 0
+
+    # ALMA stack + slope
+    alma_stack = signal.get("alma_stack_bull", False) if is_bull else signal.get("alma_stack_bear", False)
+    alma_slope = signal.get("alma21_rising", False) if is_bull else signal.get("alma21_falling", False)
+
+    if alma_stack and alma_slope:
+        s_alma = 15
+    elif alma_stack:
+        s_alma = 10
+    elif alma_slope:
+        s_alma = 5
+    else:
+        s_alma = 0
+
+    mom_score = s_exp + s_alma
+    details = {"s_exp": s_exp, "s_alma": s_alma, "mom_total": mom_score}
+    return mom_score, details
+
+
+# ─── RS Sub-Score (0-20) ──────────────────────────────────────
+def _score_rs(signal: dict, market_context: dict) -> tuple[int, dict]:
+    """
+    Pine lines 393-395:
+    sRvol = rvolRatio >= 1.5 ? 10 : >= 1.25 ? 7 : >= 1.0 ? 3 : 0
+    sRSval = rsVsSpy > 0 and rsVsQqq > 0 ? 10 : one > 0 ? 5 : 0
+    rsScoreVal = sRvol + sRSval
+    """
+    direction = signal.get("direction", "MIXED")
+    is_bull = direction == "BULL"
+
+    # RVOL ratio (graduated)
+    vol_ratio = signal.get("vol_ratio", 0.0)
+    if vol_ratio >= 1.5:
+        s_rvol = 10
+    elif vol_ratio >= 1.25:
+        s_rvol = 7
+    elif vol_ratio >= 1.0:
+        s_rvol = 3
+    else:
+        s_rvol = 0
+
+    # Relative strength vs SPY and QQQ
+    rs_vs_spy = signal.get("rs_vs_spy", 0.0)
+    rs_vs_qqq = signal.get("rs_vs_qqq", 0.0)
+
+    if is_bull:
+        if rs_vs_spy > 0 and rs_vs_qqq > 0:
+            s_rs = 10
+        elif rs_vs_spy > 0 or rs_vs_qqq > 0:
+            s_rs = 5
+        else:
+            s_rs = 0
+    else:  # BEAR or MIXED
+        if rs_vs_spy < 0 and rs_vs_qqq < 0:
+            s_rs = 10
+        elif rs_vs_spy < 0 or rs_vs_qqq < 0:
+            s_rs = 5
+        else:
+            s_rs = 0
+
+    rs_score = s_rvol + s_rs
+    details = {"s_rvol": s_rvol, "s_rs": s_rs, "rs_total": rs_score}
+    return rs_score, details
+
+
+# ─── Penalties ────────────────────────────────────────────────
+def _apply_penalties(signal: dict) -> tuple[int, dict]:
+    """
+    Pine lines 398-400:
+    penStretch = extATR > 3.5 ? -30 : extATR > 2.5 ? -20 : 0
+    penWeakRS = rsVsSpy < -2.0 and rsVsQqq < -2.0 ? -20 : 0
+    """
+    direction = signal.get("direction", "MIXED")
+    is_bull = direction == "BULL"
+    ext = signal.get("ext", 0)
+
+    # Extension penalty
+    if ext > 3.5:
+        pen_stretch = -30
+    elif ext > 2.5:
+        pen_stretch = -20
+    else:
+        pen_stretch = 0
+
+    # Weak RS penalty
+    rs_vs_spy = signal.get("rs_vs_spy", 0.0)
+    rs_vs_qqq = signal.get("rs_vs_qqq", 0.0)
+
+    if is_bull and rs_vs_spy < -2.0 and rs_vs_qqq < -2.0:
+        pen_weak_rs = -20
+    elif not is_bull and rs_vs_spy > 2.0 and rs_vs_qqq > 2.0:
+        pen_weak_rs = -20
+    else:
+        pen_weak_rs = 0
+
+    pen_total = pen_stretch + pen_weak_rs
+    details = {"pen_stretch": pen_stretch, "pen_weak_rs": pen_weak_rs, "pen_total": pen_total}
+    return pen_total, details
+
+
+# ─── Setup Detection (from Pine alert conditions) ─────────────
+def _detect_setup(signal: dict) -> str:
+    """
+    Detect setup type matching Pine alertconditions:
+    - SLINGSHOT: slingFire (fresh flip + wasCoiled + MTF aligned + expansion fire)
+    - FIRE: trendBull + (slingFire or expansionFire) + ext <= 2.0
+    - TRIGGER: bullCount >= 3 + not stretched + ext <= 2.5
+    - COIL: isBull + close <= ema21 + close > trail (reloading)
+    - ACTIVE: isBull + extended
+    - WATCH: everything else
+    """
+    direction = signal.get("direction", "MIXED")
+    is_bull = direction == "BULL"
+    bull_count = signal.get("bull_count", 0)
+    ext = signal.get("ext", 0)
+    is_stretched = signal.get("is_stretched", False)
+    expansion_fire = signal.get("expansion_fire", False)
+    flip_age = signal.get("flip_age", 999)
+    comp_score = signal.get("comp_score", 0)
+    recent_comp_max = signal.get("recent_comp_max", 0)
+    close = signal.get("close", 0)
+    alma21 = signal.get("alma21", 0)
+    trail = signal.get("trail", 0)
+
+    # Slingshot: fresh flip + was compressed + MTF aligned + expansion fire
+    was_coiled = recent_comp_max >= 3
+    mtf_bull_aligned = bull_count >= 3
+    fresh_flip = flip_age <= 4
+
+    triple_bull = bull_count >= 3 and signal.get("is_bull_4h", False)
+    triple_bear = (4 - bull_count) >= 3 and not signal.get("is_bull_4h", True)
+
+    # SLINGSHOT FIRE (most precise - maps to slingFire alertcondition)
+    if is_bull and fresh_flip and was_coiled and mtf_bull_aligned and expansion_fire:
+        return "SLINGSHOT"
+    if not is_bull and fresh_flip and was_coiled and (4 - bull_count) >= 3 and expansion_fire:
+        return "SLINGSHOT"
+
+    # FIRE: triple aligned + expansion/slingshot + near trail
+    if triple_bull and (expansion_fire) and ext <= 2.0:
+        return "FIRE"
+    if triple_bear and (expansion_fire) and ext <= 2.0:
+        return "FIRE"
+
+    # TRIGGER: 3+ TFs aligned, not stretched, reasonable extension
+    if bull_count >= 3 and not is_stretched and ext <= 2.5 and is_bull:
+        return "TRIGGER"
+    if (4 - bull_count) >= 3 and not is_stretched and ext <= 2.5 and not is_bull:
+        return "TRIGGER"
+
+    # COIL: bull 4H + pulling back to ALMA21 + above trail (reloading zone)
+    is_bull_4h = signal.get("is_bull_4h", False)
+    if is_bull_4h and close > 0 and alma21 > 0 and trail > 0:
+        if close <= alma21 and close > trail:
+            return "COIL"
+
+    # ACTIVE: bull but extended
+    if is_bull_4h and (ext > 2.5 or is_stretched):
+        return "ACTIVE"
+
+    return "WATCH"
+
+
+# ─── Main Scorer ─────────────────────────────────────────────
 def score_signal(signal: dict, market_context: dict = None) -> dict:
     """
-    Score a signal using the weighted additive system.
+    Score a signal using the Elastic Dashboard v3.0 3-pillar system.
 
-    Args:
-        signal: dict with ticker analysis data (from signal_engine)
-        market_context: dict with market-level data:
-            - spy_below_trail: bool — SPY is below its ATR trail
-            - sector_bull: dict[str, bool] — {sector: is_bull} for sector ETFs
-            - spy_perf_5d: float — SPY 5-day % return (for relative strength)
-            - ticker_perf_5d: float — ticker 5-day % return
-            - earnings_days: int — days until next earnings (None if unknown)
-
-    Returns the mutated signal dict with 'score', 'tier', and 'factors'.
+    Returns mutated signal with:
+      score, quality, tier, setup, struct_score, mom_score, rs_score, penalties, factors
     """
     if market_context is None:
         market_context = {}
 
-    eqs = 0
-    factors = {}
-    direction = signal.get("direction", "MIXED")
+    # Compute sub-scores
+    struct_score, struct_details = _score_structure(signal)
+    mom_score, mom_details = _score_momentum(signal)
+    rs_score, rs_details = _score_rs(signal, market_context)
+    penalties, pen_details = _apply_penalties(signal)
 
-    # ─── +25 MTF Aligned ─────────────────────────────────────────
-    mtf_str = signal.get("mtf", "")
+    # Total (clamped 0-100)
+    total = max(0, min(100, struct_score + mom_score + rs_score + penalties))
 
-    if direction == "BULL":
-        mtf_aligned = mtf_str.count("+") >= 3
-    elif direction == "BEAR":
-        mtf_aligned = mtf_str.count("-") >= 3
-    else:
-        mtf_aligned = False
-
-    if mtf_aligned:
-        eqs += W_MTF_ALIGNED
-        factors["mtf"] = W_MTF_ALIGNED
-    else:
-        factors["mtf"] = 0
-
-    # ─── +20 Recent Compression ──────────────────────────────────
-    comp = signal.get("comp_score", 0)
-    recent_comp = signal.get("recent_comp_max", comp)
-    has_compression = max(comp, recent_comp) >= COMP_FIRE_MIN
-
-    if has_compression:
-        eqs += W_COMPRESSION
-        factors["compression"] = W_COMPRESSION
-    else:
-        factors["compression"] = 0
-
-    # ─── +20 Fresh 4H Flip ───────────────────────────────────────
-    flip_age = signal.get("flip_age", 999)
-    has_fresh_flip = flip_age <= FRESH_FLIP_BARS
-
-    if has_fresh_flip:
-        eqs += W_FRESH_FLIP
-        factors["fresh_flip"] = W_FRESH_FLIP
-    else:
-        factors["fresh_flip"] = 0
-
-    # ─── +10 ALMA Momentum Confirms ──────────────────────────────
-    alma_rising = signal.get("alma_rising", False)
-    is_bull = direction == "BULL"
-
-    if (is_bull and alma_rising) or (not is_bull and not alma_rising):
-        eqs += W_ALMA_MOMENTUM
-        factors["momentum"] = W_ALMA_MOMENTUM
-    else:
-        factors["momentum"] = 0
-
-    # ─── +10 RVOL (Relative Volume) ──────────────────────────────
-    vol_ratio = signal.get("vol_ratio", 1.0)
-
-    if vol_ratio >= VOL_SURGE_MULT:
-        eqs += W_RVOL
-        factors["rvol"] = W_RVOL
-    else:
-        factors["rvol"] = 0
-
-    # ─── +10 Sector Strength ─────────────────────────────────────
-    sector = signal.get("sector", "")
-    sector_bull = market_context.get("sector_bull", {})
-
-    if sector and sector in sector_bull:
-        sector_aligned = (
-            (direction == "BULL" and sector_bull[sector]) or
-            (direction == "BEAR" and not sector_bull[sector])
-        )
-        if sector_aligned:
-            eqs += W_SECTOR_STRENGTH
-            factors["sector"] = W_SECTOR_STRENGTH
-        else:
-            factors["sector"] = 0
-    else:
-        factors["sector"] = 0
-
-    # ─── +10 Relative Strength ───────────────────────────────────
-    ticker_perf = market_context.get("ticker_perf_5d", {}).get(signal.get("ticker", ""))
-    spy_perf = market_context.get("spy_perf_5d")
-
-    if ticker_perf is not None and spy_perf is not None:
-        # Bull: stock outperforming SPY; Bear: stock underperforming SPY
-        if direction == "BULL" and ticker_perf > spy_perf:
-            eqs += W_RELATIVE_STRENGTH
-            factors["relative_strength"] = W_RELATIVE_STRENGTH
-        elif direction == "BEAR" and ticker_perf < spy_perf:
-            eqs += W_RELATIVE_STRENGTH
-            factors["relative_strength"] = W_RELATIVE_STRENGTH
-        else:
-            factors["relative_strength"] = 0
-    else:
-        factors["relative_strength"] = 0
-
-    # ─── PENALTIES ───────────────────────────────────────────────
-
-    # Extension penalty
+    # Anti-chase hard suppress
     ext = signal.get("ext", 0)
-    if ext > 3.5:
-        eqs += P_HIGH_EXT  # -40
-        factors["ext_penalty"] = P_HIGH_EXT
-    elif ext > 2.5:
-        eqs += P_MID_EXT   # -20
-        factors["ext_penalty"] = P_MID_EXT
-    else:
-        factors["ext_penalty"] = 0
-
-    # Earnings proximity penalty
-    earnings_days = market_context.get("earnings_days", {}).get(signal.get("ticker", ""))
-    if earnings_days is not None and 0 <= earnings_days <= 7:
-        eqs += P_EARNINGS_NEAR  # -25
-        factors["earnings_penalty"] = P_EARNINGS_NEAR
-    else:
-        factors["earnings_penalty"] = 0
-
-    # Weak market regime penalty
-    spy_below_trail = market_context.get("spy_below_trail", False)
-    if spy_below_trail and direction == "BULL":
-        eqs += P_WEAK_REGIME  # -15
-        factors["regime_penalty"] = P_WEAK_REGIME
-    elif not spy_below_trail and direction == "BEAR":
-        # Bearish signal in strong market regime also penalized
-        eqs += P_WEAK_REGIME
-        factors["regime_penalty"] = P_WEAK_REGIME
-    else:
-        factors["regime_penalty"] = 0
-
-    # ─── Clamp to 0-100 ─────────────────────────────────────────
-    eqs = max(0, min(100, eqs))
-
-    # ─── Anti-chase hard suppress ────────────────────────────────
     if ext > EXT_HARD_CEILING:
-        eqs = 0
+        total = 0
 
-    # ─── Tier assignment ─────────────────────────────────────────
-    tier = score_to_tier(eqs)
+    # Quality + tier + setup
+    quality = score_to_quality(total)
+    tier = score_to_tier(total)
+    setup = _detect_setup(signal)
 
-    signal["score"] = eqs
+    # Enrich signal
+    signal["score"] = total
+    signal["quality"] = quality
     signal["tier"] = tier
-    signal["factors"] = factors
+    signal["setup"] = setup
+    signal["struct_score"] = struct_score
+    signal["mom_score"] = mom_score
+    signal["rs_score"] = rs_score
+    signal["penalties"] = penalties
+    signal["factors"] = {
+        **struct_details,
+        **mom_details,
+        **rs_details,
+        **pen_details,
+    }
 
     return signal

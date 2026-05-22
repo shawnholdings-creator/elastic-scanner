@@ -45,35 +45,20 @@ TENSION_STRETCHED = 1.40    # tensionVal > this = HOT
 CANDLE_BODY_MIN = 0.60      # minimum body % of range
 CANDLE_CLOSE_ZONE = 0.25    # close must be in top/bottom 25% of range
 
-# ─── Weighted Score (additive, 0-100+ scale) ──────────────────────
-# Base factors
-W_MTF_ALIGNED = 25         # all 3+ TFs agree
-W_COMPRESSION = 20         # recent compression present
-W_FRESH_FLIP = 20          # fresh 4H flip / trigger
-W_ALMA_MOMENTUM = 10       # ALMA momentum confirms direction
-W_RVOL = 10                # relative volume surge
-W_SECTOR_STRENGTH = 10     # sector ETF aligned with direction
-W_RELATIVE_STRENGTH = 10   # stock outperforming SPY
-
-# Penalties
-P_MID_EXT = -20            # extATR > 2.5
-P_HIGH_EXT = -40           # extATR > 3.5 (replaces mid)
-P_EARNINGS_NEAR = -25      # earnings within 7 days
-P_WEAK_REGIME = -10        # weak market regime (SPY below trail)
-
-# ─── Tier Thresholds ──────────────────────────────────────────────
-TIER_ELITE = 90    # 90+ = ELITE
-TIER_FIRE = 80     # 80-89 = FIRE
-TIER_PREP = 70     # 70-79 = PREP
-TIER_SUPPRESS = 70 # <70 suppressed from tradable
+# ─── Scoring Thresholds (v3.0 — Pine parity) ─────────────────────
+# Quality tiers set in scoring.py (ELITE=75, GOOD=55, EARLY=35, HOT=20)
+# These are kept for backward compat references only
+TIER_ELITE = 90    # 90+ = ELITE tier
+TIER_FIRE = 80     # 80-89 = FIRE tier
+TIER_PREP = 70     # 70-79 = PREP tier
+TIER_SUPPRESS = 70 # <70 suppressed from tier (but quality scoring uses 20+)
 
 # ─── Anti-Chase ──────────────────────────────────────────────────
 # Extension beyond this = fully suppressed regardless of score
 EXT_HARD_CEILING = 4.0
 
 # ─── ntfy Alert Thresholds ─────────────────────────────────────────
-MIN_NTFY_SCORE = 70     # minimum score for ntfy alert (transitions only)
-MIN_DASHBOARD_SCORE = 55  # minimum score to appear on dashboard watchlist (developing)
+MIN_NTFY_SCORE = 55     # minimum score for ntfy alert (GOOD+ transitions only)
 
 # ─── Quality Gate ──────────────────────────────────────────────────
 MIN_PRICE = 15.0
@@ -83,6 +68,9 @@ MIN_AVG_VOL = 300_000
 # ─── Universe ──────────────────────────────────────────────────────
 SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 NDX100_URL = "https://en.wikipedia.org/wiki/Nasdaq-100"
+RUSSELL1000_URL = "https://en.wikipedia.org/wiki/Russell_1000_Index"
+SP400_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_400_companies"
+SP600_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_600_companies"
 
 # Fallback tickers if Wikipedia scrape fails
 FALLBACK_TICKERS = [

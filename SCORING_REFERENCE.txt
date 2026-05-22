@@ -1,0 +1,189 @@
+================================================================
+  ELASTIC SCANNER v3.0 — SCORING → SETUP MAPPING REFERENCE
+================================================================
+
+Last updated: 2026-05-18
+
+
+────────────────────────────────────────────────────────────────
+  1.  SCORING FACTORS (additive, 0–100 scale)
+────────────────────────────────────────────────────────────────
+
+  FACTOR                  WEIGHT   CONDITION
+  ──────────────────────  ──────   ──────────────────────────────
+  MTF Aligned              +25    3+ timeframes agree (4H/1D/1W)
+  Recent Compression       +20    comp_score >= 2 within last 3 bars
+  Fresh 4H Flip            +20    flip_age <= 2 bars (8 hours)
+  ALMA Momentum            +10    ALMA direction confirms signal
+  RVOL (Volume Surge)      +10    vol_ratio >= 1.2x 20-bar avg
+  Sector Strength          +10    Sector ETF trend aligned
+  Relative Strength        +10    Stock outperforming SPY (5-day)
+                          ─────
+  MAX POSSIBLE             105    (clamped to 100)
+
+
+────────────────────────────────────────────────────────────────
+  2.  PENALTIES
+────────────────────────────────────────────────────────────────
+
+  PENALTY                 VALUE    CONDITION
+  ──────────────────────  ──────   ──────────────────────────────
+  Mid Extension            -20    extATR > 2.5
+  High Extension           -40    extATR > 3.5 (replaces -20)
+  Earnings Proximity       -25    Earnings within 7 days
+  Weak Market Regime       -15    SPY below trail (bull signal)
+                                  or SPY above trail (bear signal)
+
+  HARD SUPPRESS:  extATR > 4.0 → score forced to 0
+
+
+────────────────────────────────────────────────────────────────
+  3.  SCORE → TIER (internal classification)
+────────────────────────────────────────────────────────────────
+
+  SCORE       TIER       ACTION
+  ─────────   ────────   ──────────────────────────────
+  90–100      ELITE      Highest conviction — push alert
+  80–89       FIRE       Strong setup — push alert
+  70–79       PREP       Developing — push alert
+  < 70        SUPPRESS   Filtered out, not displayed
+
+
+────────────────────────────────────────────────────────────────
+  4.  SCORE → GRADE (dashboard display)
+────────────────────────────────────────────────────────────────
+
+  SCORE       GRADE    BADGE COLOR        COCKPIT MEANING
+  ─────────   ─────    ────────────────   ──────────────────
+  90–100       A       Green (#22c55e)    Elite conviction
+  80–89        B       Blue  (#3b82f6)    Strong setup
+  70–79        C       Amber (#f59e0b)    Watch / developing
+  < 70         D       Gray  (#6b7280)    (never shown — suppressed)
+
+
+────────────────────────────────────────────────────────────────
+  5.  VERDICT LABELS (dashboard display)
+────────────────────────────────────────────────────────────────
+
+  VERDICT               COLOR     TRIGGER CONDITIONS
+  ────────────────────   ───────   ───────────────────────────────
+  BULLISH SLINGSHOT      Green     compressed + fresh flip (<=2) + expansion_fire
+  BEARISH SLINGSHOT      Green     (same, bear direction)
+  COIL                   Blue      compressed, no flip yet
+  BULLISH TRIGGER        Orange    fresh flip (<=2), not compressed
+  BEARISH TRIGGER        Orange    (same, bear direction)
+  BULLISH ELITE          Green     tier=ELITE, no compression/flip
+  BEARISH ELITE          Green     (same, bear direction)
+  BULLISH FIRE           Orange    tier=FIRE, no compression/flip
+  BEARISH FIRE           Orange    (same, bear direction)
+  READY                  Purple    tier=PREP, baseline setup
+
+
+────────────────────────────────────────────────────────────────
+  6.  EXAMPLE SCORE BREAKDOWNS
+────────────────────────────────────────────────────────────────
+
+  EXAMPLE A — "Perfect ELITE" (score 95)
+  ┌──────────────────────────────────────┐
+  │  MTF Aligned         +25            │
+  │  Fresh Flip          +20            │
+  │  Compression         +20            │
+  │  ALMA Momentum       +10            │
+  │  RVOL Surge          +10            │
+  │  Sector Aligned      +10            │
+  │  Relative Strength   +10  ← capped  │
+  │  No penalties                        │
+  │  ────────────────────────            │
+  │  RAW: 105 → CLAMPED: 100            │
+  │  TIER: ELITE  │  GRADE: A           │
+  │  VERDICT: BULLISH SLINGSHOT          │
+  └──────────────────────────────────────┘
+
+  EXAMPLE B — "Extended FIRE" (score 85)
+  ┌──────────────────────────────────────┐
+  │  MTF Aligned         +25            │
+  │  Fresh Flip          +20            │
+  │  Compression         +20            │
+  │  ALMA Momentum       +10            │
+  │  RVOL Surge          +10            │
+  │  Sector Aligned      +10            │
+  │  Relative Strength   +10            │
+  │  High Extension (3.6) -40           │
+  │  ────────────────────────            │
+  │  RAW: 65 → TIER: SUPPRESS           │
+  │  (would NOT display — too extended)  │
+  └──────────────────────────────────────┘
+
+  EXAMPLE C — "Coiled PREP" (score 75)
+  ┌──────────────────────────────────────┐
+  │  MTF Aligned         +25            │
+  │  Compression         +20            │
+  │  ALMA Momentum       +10            │
+  │  RVOL Surge          +10            │
+  │  Sector Aligned      +10            │
+  │  No flip, no RS       +0            │
+  │  No penalties                        │
+  │  ────────────────────────            │
+  │  RAW: 75                             │
+  │  TIER: PREP   │  GRADE: C           │
+  │  VERDICT: COIL                       │
+  └──────────────────────────────────────┘
+
+
+────────────────────────────────────────────────────────────────
+  7.  PIPELINE FLOW
+────────────────────────────────────────────────────────────────
+
+  Wikipedia (S&P 500 + NDX 100)
+       │
+       ▼
+  Load Universe (~550 tickers + indices + sector ETFs)
+       │
+       ▼
+  Bulk Download OHLCV (yfinance: 4H, 1D, 1W, 1M)
+       │
+       ▼
+  Quality Gate (price $15–$500, avg vol >= 300K)
+       │
+       ▼
+  Elastic Engine (ATR trail, compression, ALMA, extension)
+       │
+       ▼
+  Signal Engine (MTF alignment, direction, build signal dict)
+       │
+       ▼
+  Scoring Engine (additive score + penalties → tier)
+       │
+       ▼
+  Filter (score >= 70 only) → Rank by score desc
+       │
+       ├── CSV export (timestamped + latest.csv)
+       ├── Dashboard Gist (dashboard.json → AI Cockpit)
+       └── ntfy push (mobile alert, top 5 bull + bear)
+
+
+────────────────────────────────────────────────────────────────
+  8.  CONFIGURATION CONSTANTS (config/settings.py)
+────────────────────────────────────────────────────────────────
+
+  ATR_PERIOD         = 28        ATR lookback
+  ATR_FACTOR         = 5.0       ATR trail multiplier
+  BB_LEN             = 20        Bollinger Band length
+  BB_MULT            = 2.0       BB standard deviation mult
+  KC_MULT            = 1.5       Keltner Channel mult
+  ALMA_PERIOD        = 9         ALMA lookback
+  FRESH_FLIP_BARS    = 2         Max bars since flip (4H = 8hr)
+  COMP_FIRE_MIN      = 2         Min compression score
+  COMP_FIRE_LOOKBACK = 3         Bars to look back for comp
+  VOL_SURGE_MULT     = 1.2       RVOL threshold
+  EXT_HARD_CEILING   = 4.0       Anti-chase kill switch
+  MIN_PRICE          = $15       Quality gate floor
+  MAX_PRICE          = $500      Quality gate ceiling
+  MIN_AVG_VOL        = 300,000   Volume floor
+  TOP_N              = 5         Max signals per direction
+
+
+================================================================
+  EDUCATIONAL ANALYSIS ONLY. NOT FINANCIAL ADVICE.
+  NOT A RECOMMENDATION TO BUY, SELL, OR HOLD.
+================================================================

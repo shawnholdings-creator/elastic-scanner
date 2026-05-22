@@ -72,12 +72,19 @@ def classify_signal(ticker: str, data_4h: dict, data_1d: dict,
     is_stretched = data_4h.get("is_stretched", False)
     close = data_4h.get("close", 0)
     trail = data_4h.get("trail", 0)
-    alma8 = data_4h.get("alma8", 0)
-    alma21 = data_4h.get("alma21", 0)
-    alma34 = data_4h.get("alma34", 0)
-    atr14 = data_4h.get("atr14", 0)
-    open_air = data_4h.get("open_air", False)
-    tension = data_4h.get("tension", 1.0)
+    # ALMA stack + slope (Dashboard v3.0 scoring)
+    alma13 = data_4h.get("alma13", 0)
+    alma_stack_bull = alma8 > alma13 and alma13 > alma21 and alma21 > alma34 if all([alma8, alma13, alma21, alma34]) else False
+    alma_stack_bear = alma8 < alma13 and alma13 < alma21 and alma21 < alma34 if all([alma8, alma13, alma21, alma34]) else False
+    alma21_val = data_4h.get("alma21", 0)
+    alma21_prev = data_4h.get("alma21_prev3", alma21_val)  # alma21[3] for slope
+    alma21_rising = alma21_val > alma21_prev if alma21_val and alma21_prev else False
+    alma21_falling = alma21_val < alma21_prev if alma21_val and alma21_prev else False
+
+    # Expansion sub-signals (for momentum scoring)
+    atr_rise = data_4h.get("atr_rise", False)
+    range_expand = data_4h.get("range_expand", False)
+    compressed_recently = data_4h.get("compressed_recently", False)
 
     # Build signal dict — scoring engine handles all tier assignment
     return {
@@ -102,6 +109,16 @@ def classify_signal(ticker: str, data_4h: dict, data_1d: dict,
         "open_air": open_air,
         "close": close,
         "trail": trail,
+        # v3.0 scoring fields
+        "is_bull_4h": is_bull,
+        "alma_stack_bull": alma_stack_bull,
+        "alma_stack_bear": alma_stack_bear,
+        "alma21_rising": alma21_rising,
+        "alma21_falling": alma21_falling,
+        "alma21": alma21,
+        "atr_rise": atr_rise,
+        "range_expand": range_expand,
+        "compressed_recently": compressed_recently,
     }
 
 
@@ -157,4 +174,10 @@ def extract_last_bar(df) -> dict | None:
         "alma34": float(last.get("alma34", 0)),
         "atr14": float(last.get("atr14", 0)),
         "open_air": bool(last.get("open_air", False)),
+        # v3.0 scoring fields
+        "alma13": float(last.get("alma13", 0)),
+        "alma21_prev3": float(df["alma21"].iloc[-4]) if len(df) >= 4 and "alma21" in df.columns else float(last.get("alma21", 0)),
+        "atr_rise": bool(last.get("atr_rise", False)),
+        "range_expand": bool(last.get("range_expand", False)),
+        "compressed_recently": bool(last.get("compressed_recently", False)),
     }
