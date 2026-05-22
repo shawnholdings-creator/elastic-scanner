@@ -351,7 +351,9 @@ def _score_to_grade(score: int) -> str:
         return "B"
     elif score >= 70:
         return "C"
-    return "D"
+    elif score >= 60:
+        return "D"
+    return "F"
 
 
 def _build_verdict(signal: dict) -> str:

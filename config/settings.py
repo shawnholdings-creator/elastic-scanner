@@ -29,7 +29,7 @@ COMP_FIRE_MIN = 2       # FIRE requires >= 2 (recent)
 COMP_FIRE_LOOKBACK = 3  # bars to look back for recent compression
 
 # ─── Fresh Flip ────────────────────────────────────────────────────
-FRESH_FLIP_BARS = 2     # must have flipped within last N bars (4H = 8 hours)
+FRESH_FLIP_BARS = 4     # must have flipped within last N bars (4H = 16 hours)
 
 # ─── Volume ────────────────────────────────────────────────────────
 VOL_SURGE_MULT = 1.2    # volume >= 1.2x 20-bar avg
@@ -59,20 +59,20 @@ W_RELATIVE_STRENGTH = 10   # stock outperforming SPY
 P_MID_EXT = -20            # extATR > 2.5
 P_HIGH_EXT = -40           # extATR > 3.5 (replaces mid)
 P_EARNINGS_NEAR = -25      # earnings within 7 days
-P_WEAK_REGIME = -15        # weak market regime (SPY below trail)
+P_WEAK_REGIME = -10        # weak market regime (SPY below trail)
 
 # ─── Tier Thresholds ──────────────────────────────────────────────
 TIER_ELITE = 90    # 90+ = ELITE
 TIER_FIRE = 80     # 80-89 = FIRE
-TIER_PREP = 70     # 70-79 = PREP
-TIER_SUPPRESS = 70 # <70 suppressed
+TIER_PREP = 60     # 60-79 = PREP (actionable, developing)
+TIER_SUPPRESS = 60 # <60 suppressed
 
 # ─── Anti-Chase ──────────────────────────────────────────────────
 # Extension beyond this = fully suppressed regardless of score
 EXT_HARD_CEILING = 4.0
 
 # ─── ntfy Alert Thresholds ─────────────────────────────────────────
-MIN_NTFY_SCORE = 70     # minimum score to include in ntfy alert
+MIN_NTFY_SCORE = 70     # minimum score for ntfy alert (transitions only)
 
 # ─── Quality Gate ──────────────────────────────────────────────────
 MIN_PRICE = 15.0
