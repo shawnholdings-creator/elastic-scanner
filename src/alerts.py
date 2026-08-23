@@ -183,7 +183,7 @@ def send_ntfy_transitions(
         for s in transitions
     )
     priority = "high" if has_high else "default"
-    title = f"AI Cockpit — {len(transitions)} Setup Transition{'s' if len(transitions) != 1 else ''}"
+    title = f"AI Cockpit - {len(transitions)} Setup Transition{'s' if len(transitions) != 1 else ''}"
 
     try:
         resp = requests.post(
